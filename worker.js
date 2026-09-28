@@ -1,7 +1,9 @@
 /**
  * 24/7 signal worker — zelfde logica als de web-app.
- * Geen wallet, geen private key. Alleen logs + optioneel Telegram.
+ * Standaard: alleen logs + optioneel Telegram.
+ * Live swaps: alleen als ENABLE_LIVE_TRADES=1 en PRIVATE_KEY in Railway Variables.
  */
+const { liveEnabled, handleLiveEvents } = require('./liveTrade');
 const TOKEN = (process.env.TOKEN_ADDRESS || '').trim();
 const TIMEFRAME = process.env.TIMEFRAME || 'minute:5';
 const POLL_MS = Math.max(10000, Number(process.env.POLL_MS) || 30000);
@@ -274,6 +276,9 @@ async function tick() {
       res.inPos ? 'positie open' : 'flat'
     ].filter(Boolean).join(' ');
     await notify(line);
+  }
+  if (liveEnabled() && fresh.length) {
+    await handleLiveEvents(fresh, TOKEN);
   }
   if (!fresh.length) {
     console.log(new Date().toISOString(), 'geen nieuw signaal · $' + fmtPrice(res.last.close));
