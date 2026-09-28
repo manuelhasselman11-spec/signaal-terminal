@@ -1,0 +1,1313 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Signaal Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js"></script>
+<style>
+  :root {
+    --bg: #f4f3ef;
+    --bg-glow: rgba(181,121,58,0.10);
+    --panel: #ffffff;
+    --panel-2: #f0eee8;
+    --border: #dcd9d0;
+    --text: #1b1a17;
+    --muted: #6d685c;
+    --accent: #b5793a;
+    --accent-ink: #ffffff;
+    --buy: #1f7a4d;
+    --sell: #b23b3b;
+    --warn: #a67c1f;
+    --ema-fast: #2f7fc1;
+    --shadow: 0 1px 2px rgba(0,0,0,0.05), 0 8px 24px rgba(40,30,10,0.06);
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --sans: 'Inter', system-ui, -apple-system, sans-serif;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0c0f0d;
+      --bg-glow: rgba(217,161,91,0.09);
+      --panel: #141915;
+      --panel-2: #1b221d;
+      --border: #28302a;
+      --text: #ebe9e2;
+      --muted: #8b9088;
+      --accent: #dca35c;
+      --accent-ink: #1a1408;
+      --buy: #3fc07a;
+      --sell: #ec6a60;
+      --warn: #dca35c;
+      --ema-fast: #56a6ea;
+      --shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 10px 30px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c0f0d;
+    --bg-glow: rgba(217,161,91,0.09);
+    --panel: #141915;
+    --panel-2: #1b221d;
+    --border: #28302a;
+    --text: #ebe9e2;
+    --muted: #8b9088;
+    --accent: #dca35c;
+    --accent-ink: #1a1408;
+    --buy: #3fc07a;
+    --sell: #ec6a60;
+    --warn: #dca35c;
+    --ema-fast: #56a6ea;
+    --shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 10px 30px rgba(0,0,0,0.35);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body {
+    margin: 0; min-height: 100vh;
+    background: radial-gradient(900px 420px at 85% -8%, var(--bg-glow), transparent 70%), var(--bg);
+    color: var(--text); font-family: var(--sans); -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 18px 16px 56px; }
+
+  /* top bar */
+  .topbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-right: 6px; }
+  .brand-mark {
+    width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center;
+    background: linear-gradient(140deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--buy)));
+    color: var(--accent-ink); font-weight: 800; font-size: 0.95rem;
+  }
+  .brand h1 { font-size: 1.02rem; margin: 0; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
+  .brand small { display: block; color: var(--muted); font-size: 0.7rem; font-weight: 500; }
+  .search { flex: 1 1 340px; display: flex; gap: 8px; min-width: 0; }
+  .search input {
+    flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 10px; padding: 10px 13px; font-family: var(--mono); font-size: 0.82rem; box-shadow: var(--shadow);
+  }
+  .search input:focus, .field input:focus, .field select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+
+  button {
+    background: var(--accent); color: var(--accent-ink); border: none; border-radius: 10px;
+    padding: 10px 16px; font-family: var(--sans); font-weight: 650; font-size: 0.84rem; cursor: pointer;
+    transition: transform .06s ease, filter .15s ease;
+  }
+  button:hover { filter: brightness(1.07); }
+  button:active { transform: translateY(1px); }
+  button.ghost { background: var(--panel); color: var(--text); border: 1px solid var(--border); font-weight: 550; box-shadow: var(--shadow); }
+  button.icon { padding: 10px 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .status-line { font-size: 0.78rem; color: var(--muted); min-height: 1.2em; margin: 0 0 14px 2px; }
+  .status-line.err { color: var(--sell); }
+  .status-line.ok { color: var(--buy); }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; box-shadow: var(--shadow); }
+  h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 12px; color: var(--muted); font-weight: 650; }
+
+  /* token header */
+  .token-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+  .logo {
+    width: 52px; height: 52px; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--border);
+    display: grid; place-items: center; font-weight: 800; font-size: 1.15rem; color: var(--accent); overflow: hidden; flex: none;
+  }
+  .logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .token-id { min-width: 0; }
+  .token-name { font-size: 1.25rem; font-weight: 750; letter-spacing: -0.015em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .chip { font-family: var(--mono); font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+  .token-sub { color: var(--muted); font-size: 0.76rem; margin-top: 3px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .token-sub a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .token-price { margin-left: auto; text-align: right; }
+  .price-big { font-family: var(--mono); font-size: 1.55rem; font-weight: 700; letter-spacing: -0.02em; }
+  .changes { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; flex-wrap: wrap; }
+  .chg { font-family: var(--mono); font-size: 0.7rem; font-weight: 650; padding: 3px 8px; border-radius: 6px; background: var(--panel-2); }
+  .chg span { color: var(--muted); font-weight: 500; margin-right: 5px; }
+  .up { color: var(--buy); } .down { color: var(--sell); } .flatc { color: var(--muted); }
+  @media (max-width: 640px) { .token-price { margin-left: 0; text-align: left; width: 100%; } .changes { justify-content: flex-start; } }
+
+  /* stats */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow); }
+  .stat .k { font-size: 0.68rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 650; }
+  .stat .v { font-family: var(--mono); font-size: 1.12rem; font-weight: 700; margin-top: 5px; letter-spacing: -0.02em; }
+  .stat .s { font-size: 0.72rem; color: var(--muted); margin-top: 3px; font-family: var(--mono); }
+  .stat.hero { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, var(--panel)), var(--panel)); }
+  .bar { height: 5px; border-radius: 4px; background: var(--panel-2); margin-top: 8px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--sell), var(--warn), var(--buy)); width: 0%; transition: width .4s ease; }
+
+  /* layout */
+  .grid { display: grid; grid-template-columns: minmax(0, 2.3fr) minmax(300px, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 940px) { .grid { grid-template-columns: 1fr; } }
+  .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .pills { display: flex; gap: 4px; background: var(--panel-2); padding: 3px; border-radius: 10px; flex-wrap: wrap; }
+  .pill { background: transparent; color: var(--muted); padding: 6px 11px; border-radius: 8px; font-size: 0.76rem; font-weight: 600; font-family: var(--mono); }
+  .pill:hover { filter: none; color: var(--text); }
+  .pill.active { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+  .legend { display: flex; gap: 12px; font-size: 0.72rem; color: var(--muted); font-family: var(--mono); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+  #chart { width: 100%; height: 470px; }
+  @media (max-width: 640px) { #chart { height: 360px; } }
+  .side { display: flex; flex-direction: column; gap: 16px; }
+
+  table.info { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 0.8rem; }
+  table.info td { padding: 7px 0; border-bottom: 1px solid var(--border); }
+  table.info tr:last-child td { border-bottom: none; }
+  table.info td:first-child { color: var(--muted); font-family: var(--sans); font-size: 0.76rem; }
+  table.info td:last-child { text-align: right; font-weight: 650; }
+  .badge { display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 0.7rem; font-weight: 750; letter-spacing: .03em; }
+  .badge.long { background: color-mix(in srgb, var(--buy) 18%, transparent); color: var(--buy); }
+  .badge.short { background: color-mix(in srgb, var(--sell) 18%, transparent); color: var(--sell); }
+  .badge.flat { background: var(--panel-2); color: var(--muted); }
+
+  .feed { display: flex; flex-direction: column; gap: 5px; max-height: 250px; overflow-y: auto; }
+  .feed-item { font-family: var(--mono); font-size: 0.74rem; display: grid; grid-template-columns: 52px 1fr auto; gap: 8px; align-items: center; padding: 7px 9px; border-radius: 8px; background: var(--panel-2); }
+  .feed-item .tag { font-weight: 750; }
+  .tag.BUY, .tag.TP1, .tag.TP2 { color: var(--buy); } .tag.SELL, .tag.SL { color: var(--sell); } .tag.FLIP { color: var(--warn); }
+  .feed-item .t { color: var(--muted); }
+  .feed-empty { color: var(--muted); font-size: 0.8rem; padding: 4px 2px; }
+
+  .field label { display: block; font-size: 0.7rem; color: var(--muted); margin-bottom: 5px; font-weight: 550; }
+  .field input, .field select {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 0.8rem;
+  }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+  .checkline { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text); cursor: pointer; }
+  .note { font-size: 0.72rem; color: var(--muted); line-height: 1.55; margin-top: 8px; }
+  .warnbox { border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 8%, transparent); border-radius: 10px; padding: 10px 12px; font-size: 0.72rem; line-height: 1.55; color: var(--muted); margin-top: 10px; }
+  details.adv { margin-top: 16px; }
+  details.adv > summary { cursor: pointer; font-size: 0.8rem; color: var(--muted); font-weight: 600; padding: 4px 2px; }
+  .adv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: 10px; margin-top: 12px; }
+  .paste-area { width: 100%; min-height: 90px; margin-top: 10px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 9px; font-family: var(--mono); font-size: 0.74rem; resize: vertical; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .disclaimer { font-size: 0.72rem; color: var(--muted); border: 1px dashed var(--border); border-radius: 10px; padding: 11px 13px; margin-top: 18px; line-height: 1.55; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
+
+  .rsi-wrap { margin-top: 6px; position: relative; }
+  .rsi-wrap .rsi-label { position: absolute; top: 4px; left: 8px; font-size: 0.66rem; color: var(--muted); font-family: var(--mono); z-index: 2; letter-spacing: .04em; }
+  #rsiChart { width: 100%; height: 90px; }
+  .sig-toggles { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .sig-toggle { display: flex; align-items: center; gap: 7px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 7px 11px; font-size: 0.76rem; font-weight: 600; cursor: pointer; }
+  .sig-toggle small { display: block; font-weight: 500; color: var(--muted); font-size: 0.66rem; }
+  .tbl-wrap { overflow-x: auto; }
+  table.bt { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 0.76rem; white-space: nowrap; }
+  table.bt th { text-align: right; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 0.68rem; text-transform: uppercase; letter-spacing: .04em; }
+  table.bt th:first-child, table.bt td:first-child { text-align: left; }
+  table.bt td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.bt tr.bh td { color: var(--muted); font-style: italic; }
+  .up { color: var(--buy); } .down { color: var(--sell); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark">S</div>
+      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie</small></div>
+    </div>
+    <div class="search">
+      <input id="tokenAddr" value="9zqre5sRRdFvKqyTyvEd1jcKDRF4g47s7mZSGUnQpump" spellcheck="false" placeholder="Token-adres of link (DexScreener / GMGN / pump.fun)">
+      <button id="loadBtn">Laad</button>
+    </div>
+    <button class="ghost icon" id="themeBtn" title="Licht / donker">◐</button>
+  </div>
+  <div class="status-line" id="statusLine">Plak een token-adres en klik op Laad.</div>
+
+  <!-- token header -->
+  <div class="card token-head" id="tokenHead">
+    <div class="logo" id="tLogo">?</div>
+    <div class="token-id">
+      <div class="token-name"><span id="tName">Geen token geladen</span><span class="chip" id="tSymbol">—</span></div>
+      <div class="token-sub"><span id="tDex">—</span><span id="tAge"></span><a id="tLink" href="#" target="_blank" rel="noopener" style="display:none">DexScreener ↗</a></div>
+    </div>
+    <div class="token-price">
+      <div class="price-big" id="tPrice">–</div>
+      <div class="changes" id="tChanges"></div>
+    </div>
+  </div>
+
+  <!-- stats -->
+  <div class="stats">
+    <div class="stat hero"><div class="k">Market cap</div><div class="v" id="sMcap">–</div><div class="s" id="sMcapSub">&nbsp;</div></div>
+    <div class="stat hero"><div class="k">ATH market cap</div><div class="v" id="sAthMcap">–</div><div class="s" id="sAthSub">&nbsp;</div><div class="bar"><i id="sAthBar"></i></div></div>
+    <div class="stat"><div class="k">ATH prijs</div><div class="v" id="sAthPrice">–</div><div class="s" id="sAthDate">&nbsp;</div></div>
+    <div class="stat"><div class="k">Liquiditeit</div><div class="v" id="sLiq">–</div><div class="s" id="sLiqSub">&nbsp;</div></div>
+    <div class="stat"><div class="k">Volume 24u</div><div class="v" id="sVol">–</div><div class="s" id="sVolSub">&nbsp;</div></div>
+    <div class="stat"><div class="k">Buys / Sells 24u</div><div class="v" id="sTx">–</div><div class="s" id="sTxSub">&nbsp;</div></div>
+  </div>
+
+  <div class="grid">
+    <!-- chart -->
+    <div class="card">
+      <div class="chart-head">
+        <div class="pills" id="tfPills">
+          <button class="pill" data-tf="minute:1">1m</button>
+          <button class="pill active" data-tf="minute:5">5m</button>
+          <button class="pill" data-tf="minute:15">15m</button>
+          <button class="pill" data-tf="hour:1">1u</button>
+          <button class="pill" data-tf="hour:4">4u</button>
+          <button class="pill" data-tf="day:1">1d</button>
+        </div>
+        <div class="legend"><span><i id="lgFast" style="background:var(--ema-fast)"></i>EMA snel</span><span><i style="background:var(--accent)"></i>EMA traag</span></div>
+      </div>
+      <div id="chart"></div>
+      <div class="rsi-wrap"><span class="rsi-label">RSI(14)</span><div id="rsiChart"></div></div>
+    </div>
+
+    <div class="side">
+      <!-- paper trading -->
+      <div class="card">
+        <h2>Paper trading (simulatie, geen echt geld)</h2>
+        <div class="two">
+          <div class="field"><label>Startkapitaal (SOL)</label><input id="paperStart" type="number" value="1" min="0" step="0.1"></div>
+          <div class="field"><label>SOL-prijs (USD)</label><div class="row" style="gap:6px;"><input id="solUsdPrice" type="number" min="0" step="0.01" style="flex:1;" placeholder="auto"><button class="ghost icon" id="solPriceBtn" title="Actuele SOL-prijs ophalen">🔄</button></div></div>
+        </div>
+        <div class="two">
+          <div class="field"><label>Inzet % per buy (van SOL-saldo)</label><input id="paperBuyPct" type="number" value="40" min="1" max="100" step="1"></div>
+          <div class="field"><label>Verkoop % per sell (van tokens)</label><input id="paperSellPct" type="number" value="90" min="1" max="100" step="1"></div>
+        </div>
+        <div class="row" style="margin-bottom:10px;">
+          <label class="checkline"><input type="checkbox" id="paperToggle"> Paper-trading actief</label>
+          <button class="ghost" id="paperResetBtn">↺ Reset</button>
+        </div>
+        <table class="info" style="margin-bottom:10px;">
+          <tr><td>SOL-saldo</td><td id="pSol">–</td></tr>
+          <tr><td>Token-saldo</td><td id="pTok">–</td></tr>
+          <tr><td>Totale waarde</td><td id="pTotal">–</td></tr>
+          <tr><td>Resultaat</td><td id="pPnl">–</td></tr>
+        </table>
+        <div class="note">Simuleert BUY/SELL/TP/SL-signalen met nagemaakt geld op basis van de candle-prijs op het signaalmoment (min. kosten/slippage-% uit de indicator-instellingen). Geen wallet nodig, geen risico — goed om een strategie eerst te zien draaien voordat je 'm ooit met de echte wallet hiernaast gebruikt.</div>
+        <h2 style="margin-top:16px;">Paper trade-log</h2>
+        <div class="feed" id="paperLog"><div class="feed-empty">Nog geen paper-trades.</div></div>
+      </div>
+
+      <!-- wallet -->
+      <div class="card">
+        <h2>Wallet &amp; auto-trade (echt geld)</h2>
+        <div class="row" style="margin-bottom:8px;"><button class="ghost" id="connectBtn">Verbind Phantom</button></div>
+        <div class="status-line" id="walletStatus" style="margin-bottom:10px;">Niet verbonden.</div>
+        <div class="two">
+          <div class="field"><label>Inzet per buy (SOL)</label><input id="tradeAmount" type="number" value="0" min="0" step="0.001"></div>
+          <div class="field"><label>Slippage (bps)</label><input id="slippageBps" type="number" value="300" min="10" step="10"></div>
+        </div>
+        <div class="field" style="margin-bottom:12px;"><label>RPC endpoint (eigen RPC aanbevolen)</label><input id="rpcUrl" placeholder="https://api.mainnet-beta.solana.com" spellcheck="false"></div>
+        <label class="checkline"><input type="checkbox" id="autoTradeToggle"> Auto-trade signalen inschakelen</label>
+        <div class="warnbox">Bij elk BUY-signaal vraagt de app een echte swap (SOL → token) te ondertekenen in je Phantom-popup; bij SELL / SL / TP2 je volledige tokensaldo terug naar SOL. Er wordt niets verzonden zonder jouw bevestiging in de wallet. "SELL" betekent hier: positie sluiten, niet shorten. Begin met een heel klein bedrag.</div>
+        <h2 style="margin-top:16px;">Trade-log</h2>
+        <div class="feed" id="tradeLog"><div class="feed-empty">Nog geen trades.</div></div>
+      </div>
+
+      <!-- status -->
+      <div class="card">
+        <h2>Strategie-status</h2>
+        <table class="info">
+          <tr><td>Positie</td><td id="stPos"><span class="badge flat">Geen</span></td></tr>
+          <tr><td>Entry</td><td id="stEntry">–</td></tr>
+          <tr><td>Stop loss</td><td id="stSL" class="down">–</td></tr>
+          <tr><td>TP1</td><td id="stTP1" class="up">–</td></tr>
+          <tr><td>TP2</td><td id="stTP2" class="up">–</td></tr>
+          <tr><td>Zone</td><td id="stZone">–</td></tr>
+          <tr><td>Laatste prijs</td><td id="stPrice">–</td></tr>
+        </table>
+      </div>
+
+      <!-- feed -->
+      <div class="card">
+        <h2>Signaal-feed</h2>
+        <div class="feed" id="feed"><div class="feed-empty">Nog geen signalen.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>Signalen</h2>
+    <div class="sig-toggles">
+      <label class="sig-toggle"><input type="checkbox" id="useEma" checked> EMA-cross<small>trend volgen</small></label>
+      <label class="sig-toggle"><input type="checkbox" id="useRev" checked> Dip / reversal<small>RSI-bodem of stop-hunt wick</small></label>
+      <label class="sig-toggle"><input type="checkbox" id="useBrk" checked> Breakout<small>nieuwe high op volume</small></label>
+    </div>
+    <div class="row">
+      <div class="field" style="width:170px;"><label>Auto-ververs</label>
+        <select id="autoRefresh"><option value="0">Uit</option><option value="15000">Elke 15s</option><option value="30000" selected>Elke 30s</option><option value="60000">Elke 60s</option></select>
+      </div>
+      <label class="checkline" style="margin-top:18px;"><input type="checkbox" id="confirmCandle" checked> Kaars-bevestiging vereist (EMA-cross)</label>
+      <button class="ghost" id="notifBtn" style="margin-top:18px;">🔔 Meldingen aan</button>
+    </div>
+
+    <details class="adv" id="advDetails">
+      <summary>Indicator-instellingen &amp; handmatige data</summary>
+      <div class="adv-grid">
+        <div class="field"><label>Fast EMA</label><input id="emaFastLen" type="number" value="5" min="1"></div>
+        <div class="field"><label>Slow EMA</label><input id="emaSlowLen" type="number" value="13" min="1"></div>
+        <div class="field"><label>ATR periode</label><input id="atrLen" type="number" value="14" min="1"></div>
+        <div class="field"><label>SL × ATR (swing low)</label><input id="atrMultSL" type="number" value="1.0" min="0.1" step="0.1"></div>
+        <div class="field"><label>TP1 R:R (partial)</label><input id="rrTp1" type="number" value="1.0" min="0.1" step="0.1"></div>
+        <div class="field"><label>TP2 R:R</label><input id="rrTp2" type="number" value="3.0" min="0.1" step="0.1"></div>
+        <div class="field"><label>EMA: bevestigingsvenster (candles)</label><input id="confirmWindow" type="number" value="3" min="1" step="1"></div>
+        <div class="field"><label>RSI periode</label><input id="rsiLen" type="number" value="14" min="2"></div>
+        <div class="field"><label>RSI oversold-niveau</label><input id="rsiOS" type="number" value="32" min="1" max="49"></div>
+        <div class="field"><label>Reversal: lookback (candles)</label><input id="rsiLookback" type="number" value="6" min="2"></div>
+        <div class="field"><label>Reversal: min. bouncekaars (×ATR)</label><input id="revBody" type="number" value="0.5" min="0" step="0.1"></div>
+        <div class="field"><label>Sweep: vergelijk N candles terug</label><input id="sweepLen" type="number" value="20" min="3"></div>
+        <div class="field"><label>Breakout: N-candle high</label><input id="donLen" type="number" value="20" min="3"></div>
+        <div class="field"><label>Breakout: volume × gemiddelde</label><input id="volMult" type="number" value="1.5" min="0.5" step="0.1"></div>
+        <div class="field"><label>Trailing stop × ATR (na TP1)</label><input id="trailMult" type="number" value="2.5" min="0" step="0.1"></div>
+        <div class="field"><label>TP1: deel van positie</label><input id="partialFrac" type="number" value="0.5" min="0.1" max="1" step="0.1"></div>
+        <div class="field"><label>Kosten + slippage per trade (%)</label><input id="costPct" type="number" value="1" min="0" step="0.1"></div>
+        <div class="field"><label>Cooldown na exit (candles, trend/breakout)</label><input id="cooldown" type="number" value="3" min="0" step="1"></div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label class="checkline"><input type="checkbox" id="beAfterTp1" checked> Stop naar break-even na TP1</label>
+        <label class="checkline"><input type="checkbox" id="exitOnCross"> Ook sluiten bij bear-cross (naast SL/trail/TP2)</label>
+      </div>
+      <div class="note">Werkt live data niet voor een token, plak dan je eigen candles als CSV: <code>timestamp,open,high,low,close,volume</code> — één regel per candle. Volume is optioneel (nodig voor de breakout-check).</div>
+      <textarea class="paste-area" id="pasteData" placeholder="1719580800,0.0041,0.0045,0.0039,0.0043,15000&#10;1719581100,0.0043,0.0044,0.0040,0.0041,9000"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <button class="ghost" id="useManualBtn">Gebruik geplakte data</button>
+        <button class="ghost" id="exportCsvBtn">📋 Kopieer huidige candles als CSV</button>
+      </div>
+    </details>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>Backtest op de geladen candles</h2>
+    <div id="btBody"><div class="feed-empty">Laad eerst een grafiek.</div></div>
+  </div>
+
+  <div class="disclaimer">
+    Meerdere signaaltypes (trendvolgend, dip-koop, breakout) i.p.v. alleen EMA-cross, plus een backtest die laat zien hoe elk type het deed op de candles die je nu ziet. Geen financieel advies en geen garantie op winst — een backtest op één token/periode zegt weinig en overfit snel; dit is een indicatie, geen bewijs. Market cap is afgeleid van DexScreener (prijs × circulerende supply); ATH is de hoogste koers in de beschikbare candle-geschiedenis van de gekozen pool — bij tokens die van bonding curve naar een nieuwe pool zijn gemigreerd kan de échte ATH hoger liggen.
+  </div>
+</div>
+
+<script>
+(function(){
+  const $ = (id) => document.getElementById(id);
+  const chainMap = { solana:'solana', ethereum:'eth', bsc:'bsc', base:'base', arbitrum:'arbitrum', polygon:'polygon_pos', avalanche:'avax', optimism:'optimism' };
+  const SOL_MINT = 'So11111111111111111111111111111111111111112';
+  const JUP_BASE = 'https://lite-api.jup.ag/swap/v1';
+
+  let chart, candleSeries, fastSeries, slowSeries;
+  let refreshTimer = null;
+  let seenEventKeys = new Set();
+  let isFirstRenderOfSession = true;
+  let notifOn = false;
+  let currentTf = 'minute:5';
+  let lastMode = null;          // 'live' | 'manual'
+  let lastLiveCtx = null;
+  let pairInfo = null;          // latest DexScreener pair
+  let supply = null;            // circulating supply derived from mcap / price
+  let ath = { price: null, time: null };
+  let lastPrice = null;
+  let walletPubkey = null;
+
+  // ---------- formatting ----------
+  const SUB = '₀₁₂₃₄₅₆₇₈₉';
+  function subscript(n){ return String(n).split('').map(d => SUB[+d]).join(''); }
+  function fmtPrice(n){
+    if (n == null || !Number.isFinite(n)) return '–';
+    if (n === 0) return '0';
+    const a = Math.abs(n);
+    if (a >= 1) return n.toLocaleString('nl-NL', { maximumFractionDigits: 4 });
+    if (a >= 0.01) return n.toLocaleString('nl-NL', { maximumFractionDigits: 6 });
+    const m = a.toFixed(20).match(/^0\.(0+)(\d{1,4})/);
+    if (m && m[1].length >= 3) return (n < 0 ? '-' : '') + '0,0' + subscript(m[1].length) + m[2];
+    return n.toPrecision(4);
+  }
+  function fmtUsd(n){
+    if (n == null || !Number.isFinite(n)) return '–';
+    const a = Math.abs(n);
+    if (a >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+    if (a >= 1e6) return '$' + (n/1e6).toFixed(2) + 'M';
+    if (a >= 1e3) return '$' + (n/1e3).toFixed(1) + 'K';
+    return '$' + n.toFixed(2);
+  }
+  function fmtPct(v){
+    if (v == null || !Number.isFinite(Number(v))) return null;
+    const n = Number(v);
+    return (n > 0 ? '+' : '') + n.toFixed(Math.abs(n) >= 100 ? 0 : 1) + '%';
+  }
+  function fmtAge(ms){
+    if (!ms) return '';
+    const mins = Math.max(0, (Date.now() - ms) / 60000);
+    if (mins < 60) return Math.floor(mins) + ' min oud';
+    if (mins < 1440) return Math.floor(mins/60) + ' u oud';
+    return Math.floor(mins/1440) + ' d oud';
+  }
+  function fmtTs(sec){
+    return new Date(sec * 1000).toLocaleString('nl-NL', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+  }
+  function cssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+  // ---------- chart ----------
+  let volSeries, rsiChart, rsiSeries, syncing = false;
+  function chartColors(){
+    return { text: cssVar('--muted') || '#888', grid: cssVar('--border') || '#333', up: cssVar('--buy') || '#3fc07a', down: cssVar('--sell') || '#ec6a60', fast: cssVar('--ema-fast') || '#56a6ea', slow: cssVar('--accent') || '#dca35c' };
+  }
+  function themeOpts(c){
+    return {
+      layout: { background: { color: 'transparent' }, textColor: c.text },
+      grid: { vertLines: { color: c.grid + '55' }, horzLines: { color: c.grid + '55' } },
+      rightPriceScale: { borderColor: c.grid }, timeScale: { borderColor: c.grid }
+    };
+  }
+  function applyChartTheme(){
+    if (!chart) return;
+    const c = chartColors();
+    chart.applyOptions(themeOpts(c));
+    if (rsiChart) rsiChart.applyOptions(themeOpts(c));
+    candleSeries.applyOptions({ upColor: c.up, downColor: c.down, wickUpColor: c.up, wickDownColor: c.down });
+    fastSeries.applyOptions({ color: c.fast });
+    slowSeries.applyOptions({ color: c.slow });
+    if (rsiSeries) rsiSeries.applyOptions({ color: c.slow });
+  }
+  function initChart(){
+    const c = chartColors();
+    chart = LightweightCharts.createChart($('chart'), {
+      layout: { background: { color: 'transparent' }, textColor: c.text, fontFamily: 'JetBrains Mono, monospace', fontSize: 11 },
+      grid: { vertLines: { color: c.grid + '55' }, horzLines: { color: c.grid + '55' } },
+      rightPriceScale: { borderColor: c.grid, scaleMargins: { top: 0.06, bottom: 0.2 }, minimumWidth: 78 },
+      timeScale: { borderColor: c.grid, timeVisible: true, secondsVisible: false, rightOffset: 4 },
+      autoSize: true,
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal }
+    });
+    candleSeries = chart.addCandlestickSeries({ upColor: c.up, downColor: c.down, borderVisible: false, wickUpColor: c.up, wickDownColor: c.down });
+    fastSeries = chart.addLineSeries({ color: c.fast, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    slowSeries = chart.addLineSeries({ color: c.slow, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    volSeries = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false });
+    chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.86, bottom: 0 } });
+
+    rsiChart = LightweightCharts.createChart($('rsiChart'), {
+      layout: { background: { color: 'transparent' }, textColor: c.text, fontFamily: 'JetBrains Mono, monospace', fontSize: 10 },
+      grid: { vertLines: { color: c.grid + '55' }, horzLines: { color: c.grid + '55' } },
+      rightPriceScale: { borderColor: c.grid, scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 78 },
+      timeScale: { borderColor: c.grid, visible: false, rightOffset: 4 },
+      autoSize: true, handleScroll: false, handleScale: false,
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal }
+    });
+    rsiSeries = rsiChart.addLineSeries({
+      color: c.slow, lineWidth: 1, priceLineVisible: false, lastValueVisible: true,
+      priceFormat: { type: 'price', precision: 0, minMove: 1 },
+      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } })
+    });
+    [70, 30].forEach(v => rsiSeries.createPriceLine({ price: v, color: c.text, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: false, title: '' }));
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(r => {
+      if (syncing || !r) return; syncing = true;
+      try { rsiChart.timeScale().setVisibleLogicalRange(r); } finally { syncing = false; }
+    });
+  }
+  function setPriceFormat(price){
+    if (!price || !Number.isFinite(price)) return;
+    const m = Math.abs(price).toFixed(20).match(/^0\.(0+)/);
+    const zeros = (price < 1 && m) ? m[1].length : 0;
+    const precision = Math.min(12, Math.max(2, zeros + 4));
+    const fmt = { type: 'price', precision, minMove: Math.pow(10, -precision) };
+    candleSeries.applyOptions({ priceFormat: fmt });
+    fastSeries.applyOptions({ priceFormat: fmt });
+    slowSeries.applyOptions({ priceFormat: fmt });
+  }
+
+  function setStatus(msg, cls){
+    const el = $('statusLine');
+    el.textContent = msg;
+    el.className = 'status-line' + (cls ? (' ' + cls) : '');
+  }
+
+  // ================= INDICATORS =================
+  function computeEMA(vals, len){
+    const k = 2/(len+1), out = new Array(vals.length).fill(null);
+    if (!vals.length) return out;
+    out[0] = vals[0];
+    for (let i=1;i<vals.length;i++) out[i] = vals[i]*k + out[i-1]*(1-k);
+    return out;
+  }
+  function computeATR(highs, lows, closes, len){
+    const n = highs.length, tr = new Array(n).fill(0), atr = new Array(n).fill(null);
+    for (let i=0;i<n;i++) tr[i] = i===0 ? highs[i]-lows[i] : Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1]));
+    if (n < len) return atr;
+    let sum = 0; for (let i=0;i<len;i++) sum += tr[i];
+    atr[len-1] = sum/len;
+    for (let i=len;i<n;i++) atr[i] = (atr[i-1]*(len-1)+tr[i])/len;
+    return atr;
+  }
+  function computeRSI(closes, len){
+    const n = closes.length, rsi = new Array(n).fill(null);
+    if (n <= len) return rsi;
+    let g = 0, l = 0;
+    for (let i=1;i<=len;i++){ const d = closes[i]-closes[i-1]; if (d>=0) g += d; else l -= d; }
+    g /= len; l /= len;
+    rsi[len] = l === 0 ? 100 : 100 - 100/(1+g/l);
+    for (let i=len+1;i<n;i++){
+      const d = closes[i]-closes[i-1];
+      g = (g*(len-1) + (d>0?d:0))/len;
+      l = (l*(len-1) + (d<0?-d:0))/len;
+      rsi[i] = l === 0 ? 100 : 100 - 100/(1+g/l);
+    }
+    return rsi;
+  }
+
+  // ================= STRATEGY ENGINE (long-only / spot) =================
+  // Entry signals (any enabled one can trigger a BUY when flat):
+  //  EMA = fast EMA crosses above slow EMA (with an "armed" window so a red cross-candle no longer kills the signal)
+  //  REV = dip/reversal: oversold-RSI turn-up OR liquidity sweep (wick below range, close back inside) + strong green candle
+  //  BRK = breakout above the N-bar high on above-average volume, above slow EMA
+  // Exits: stop below recent swing low, TP1 (partial) -> stop to breakeven, TP2, ATR trailing stop, optional bear-cross exit.
+  function runEngine(bars, p){
+    const n = bars.length;
+    const O = bars.map(b=>b.open), H = bars.map(b=>b.high), L = bars.map(b=>b.low), C = bars.map(b=>b.close), V = bars.map(b=>b.volume || 0);
+    const emaF = computeEMA(C, p.emaFastLen), emaS = computeEMA(C, p.emaSlowLen);
+    const atr = computeATR(H, L, C, p.atrLen), rsi = computeRSI(C, p.rsiLen);
+    const hasVol = V.some(v => v > 0);
+    const warm = Math.max(p.emaSlowLen, p.atrLen + 1, p.rsiLen + 1, p.donLen + 1, p.sweepLen + 1, 5);
+
+    let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1, entryTime = 0;
+    let curExits = [];
+    let lastBullCross = -1e9, crossUsed = true, lastExitIdx = -1e9;
+    const trades = [], events = [], series = [];
+
+    function closeTrade(i, price, frac, type){
+      curExits.push({ time: bars[i].time, price, frac, type });
+      events.push({ time: bars[i].time, type, price });
+    }
+    function finishTrade(i){
+      let gross = 0; curExits.forEach(x => gross += x.frac * (x.price/entry - 1));
+      trades.push({ entryTime, entryPrice: entry, src, exits: curExits, ret: gross - p.costPct/100, bars: i - entryIdx, exitTime: bars[i].time });
+      inPos = false; curExits = []; lastExitIdx = i;
+    }
+
+    for (let i=0;i<n;i++){
+      const bullCross = i>0 && emaF[i] > emaS[i] && emaF[i-1] <= emaS[i-1];
+      const bearCross = i>0 && emaF[i] < emaS[i] && emaF[i-1] >= emaS[i-1];
+      if (bullCross){ lastBullCross = i; crossUsed = false; }
+      let exitedThisBar = false;
+
+      // ---- manage open position ----
+      if (inPos && i > entryIdx){
+        if (L[i] <= stop){
+          const fill = Math.min(stop, O[i]);
+          closeTrade(i, fill, size, stop > entry*1.0001 ? 'TRAIL' : 'SL');
+          finishTrade(i); exitedThisBar = true;
+        } else {
+          if (!tp1Hit && H[i] >= tp1){
+            tp1Hit = true;
+            closeTrade(i, tp1, p.partialFrac, 'TP1'); size -= p.partialFrac;
+            if (p.beAfterTp1) stop = Math.max(stop, entry);
+          }
+          if (H[i] >= tp2){
+            closeTrade(i, tp2, size, 'TP2'); finishTrade(i); exitedThisBar = true;
+          } else {
+            if (tp1Hit && p.trailMult > 0 && atr[i] != null){
+              hh = Math.max(hh, H[i]);
+              stop = Math.max(stop, hh - atr[i]*p.trailMult);
+            }
+            if (p.exitOnCross && bearCross){
+              closeTrade(i, C[i], size, 'EXIT'); finishTrade(i); exitedThisBar = true;
+            }
+          }
+        }
+      }
+
+      // ---- look for entries ----
+      if (!inPos && i >= warm && atr[i] != null && rsi[i] != null){
+        const cool = !exitedThisBar && (i - lastExitIdx) > p.cooldown;   // cooldown only throttles trend/breakout re-entries, never a dip-buy right after a stop-out
+        const rng = H[i]-L[i];
+        const closePos = rng > 0 ? (C[i]-L[i])/rng : 0.5;
+        const green = C[i] > O[i];
+        const tags = [];
+
+        if (p.useEma){
+          const window = p.confirmCandle ? Math.max(0, p.confirmWindow - 1) : 0;
+          const armed = !crossUsed && (i - lastBullCross) <= window && emaF[i] > emaS[i];
+          if (cool && armed && (!p.confirmCandle || green)){ tags.push('EMA'); crossUsed = true; }
+        }
+        if (p.useRev && green && closePos >= 0.55){
+          let minRsi = 1e9;
+          for (let k=i-p.rsiLookback+1;k<=i;k++) if (rsi[k] != null) minRsi = Math.min(minRsi, rsi[k]);
+          const oversoldTurn = minRsi < p.rsiOS && rsi[i] > rsi[i-1] && rsi[i] > minRsi && (C[i]-O[i]) >= p.revBody*atr[i];
+          let priorLow = 1e18; for (let k=i-p.sweepLen;k<i;k++) priorLow = Math.min(priorLow, L[k]);
+          const sweep = L[i] < priorLow && C[i] > priorLow;
+          if (oversoldTurn || sweep) tags.push('REV');
+        }
+        if (p.useBrk && cool && green && C[i] > emaS[i]){
+          let hi = 0; for (let k=i-p.donLen;k<i;k++) hi = Math.max(hi, H[k]);
+          let volOk = true;
+          if (hasVol){ let s = 0; for (let k=i-p.donLen;k<i;k++) s += V[k]; volOk = V[i] >= p.volMult * (s/p.donLen); }
+          if (C[i] > hi && volOk) tags.push('BRK');
+        }
+
+        if (tags.length){
+          const swingLow = Math.min(L[i], L[i-1], L[i-2]);
+          const stopPx = swingLow - atr[i]*p.atrMultSL;
+          const risk = C[i] - stopPx;
+          if (risk > 0){
+            inPos = true; entry = C[i]; stop = stopPx; tp1 = entry + risk*p.rrTp1; tp2 = entry + risk*p.rrTp2;
+            tp1Hit = false; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i; entryTime = bars[i].time; curExits = [];
+            events.push({ time: bars[i].time, type: 'BUY', price: C[i], src });
+          }
+        }
+      }
+
+      series.push({ time: bars[i].time, emaF: emaF[i], emaS: emaS[i], rsi: rsi[i], vol: V[i], inPos, entry, stop, tp1, tp2, tp1Hit, size });
+    }
+    const last = series[series.length-1] || null;
+    return { series, events, trades, state: last ? { inPos: last.inPos, entry: last.entry, stop: last.stop, tp1: last.tp1, tp2: last.tp2, tp1Hit: last.tp1Hit, size: last.size, src } : null };
+  }
+
+  function computeStats(trades, bars){
+    const n = trades.length;
+    const rets = trades.map(t => t.ret);
+    const wins = rets.filter(r => r > 0), losses = rets.filter(r => r <= 0);
+    const sum = a => a.reduce((x,y)=>x+y, 0);
+    let eq = 1, peak = 1, maxDD = 0;
+    rets.forEach(r => { eq *= (1 + r); peak = Math.max(peak, eq); maxDD = Math.min(maxDD, eq/peak - 1); });
+    const bh = bars.length > 1 ? bars[bars.length-1].close / bars[0].close - 1 : 0;
+    return {
+      n, winrate: n ? wins.length/n : 0,
+      avgWin: wins.length ? sum(wins)/wins.length : 0,
+      avgLoss: losses.length ? sum(losses)/losses.length : 0,
+      pf: losses.length && sum(losses) !== 0 ? sum(wins)/Math.abs(sum(losses)) : (wins.length ? Infinity : 0),
+      total: eq - 1, maxDD, bh
+    };
+  }
+
+  // ---------- data fetching ----------
+  async function fetchWithTimeout(url, opts, ms){
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms || 10000);
+    try {
+      return await fetch(url, Object.assign({}, opts, { signal: controller.signal }));
+    } catch (e){
+      if (e.name === 'AbortError') throw new Error('verzoek duurde te lang (timeout)');
+      throw e;
+    } finally { clearTimeout(timer); }
+  }
+  async function fetchBestPair(tokenAddress){
+    const res = await fetchWithTimeout('https://api.dexscreener.com/latest/dex/tokens/' + encodeURIComponent(tokenAddress));
+    if (!res.ok) throw new Error('DexScreener antwoordde met fout ' + res.status);
+    const data = await res.json();
+    const pairs = (data && data.pairs) || [];
+    if (!pairs.length) throw new Error('Geen pool gevonden voor dit token-adres.');
+    pairs.sort((a,b) => ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0));
+    const best = pairs[0];
+    return { pair: best, poolAddress: best.pairAddress, network: chainMap[best.chainId] || best.chainId };
+  }
+  async function fetchOHLCV(network, poolAddress, unit, aggregate, limit){
+    const url = 'https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + poolAddress + '/ohlcv/' + unit + '?aggregate=' + aggregate + '&limit=' + (limit || 300);
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) throw new Error('GeckoTerminal antwoordde met fout ' + res.status);
+    const json = await res.json();
+    const list = (json.data && json.data.attributes && json.data.attributes.ohlcv_list) || [];
+    const bars = list.map(r => ({ time: r[0], open: r[1], high: r[2], low: r[3], close: r[4], volume: r[5] }));
+    bars.sort((a,b) => a.time - b.time);
+    return bars;
+  }
+  async function fetchATH(network, poolAddress){
+    // daily candles cover the whole life of most memecoins; the high of any day includes its intraday peaks
+    const bars = await fetchOHLCV(network, poolAddress, 'day', 1, 1000);
+    let best = null, t = null;
+    bars.forEach(b => { if (best == null || b.high > best){ best = b.high; t = b.time; } });
+    return { price: best, time: t };
+  }
+  function parsePasted(text){
+    const bars = text.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+      const p = line.split(',').map(s => s.trim());
+      let t = Number(p[0]); if (t > 1e12) t = Math.floor(t/1000);
+      return { time: t, open: Number(p[1]), high: Number(p[2]), low: Number(p[3]), close: Number(p[4]), volume: p[5] ? Number(p[5]) : 0 };
+    }).filter(b => Number.isFinite(b.time) && Number.isFinite(b.close));
+    bars.sort((a,b) => a.time - b.time);
+    return bars;
+  }
+  function getParams(){
+    return {
+      emaFastLen: Number($('emaFastLen').value) || 5, emaSlowLen: Number($('emaSlowLen').value) || 13,
+      atrLen: Number($('atrLen').value) || 14, atrMultSL: Number($('atrMultSL').value) || 1.0,
+      rrTp1: Number($('rrTp1').value) || 1.0, rrTp2: Number($('rrTp2').value) || 3.0,
+      confirmCandle: $('confirmCandle').checked, confirmWindow: Number($('confirmWindow').value) || 3,
+      rsiLen: Number($('rsiLen').value) || 14, rsiOS: Number($('rsiOS').value) || 32,
+      rsiLookback: Number($('rsiLookback').value) || 6, revBody: Number($('revBody').value) || 0,
+      sweepLen: Number($('sweepLen').value) || 20, donLen: Number($('donLen').value) || 20,
+      volMult: Number($('volMult').value) || 1.5, trailMult: Number($('trailMult').value) || 0,
+      partialFrac: Math.min(1, Math.max(0.1, Number($('partialFrac').value) || 0.5)),
+      costPct: Number($('costPct').value) || 0, cooldown: Number($('cooldown').value) || 0,
+      beAfterTp1: $('beAfterTp1').checked, exitOnCross: $('exitOnCross').checked,
+      useEma: $('useEma').checked, useRev: $('useRev').checked, useBrk: $('useBrk').checked
+    };
+  }
+
+  // ---------- market panel (token header + stats) ----------
+  function setPair(pair){
+    pairInfo = pair;
+    const mc = Number(pair.marketCap || pair.fdv);
+    const px = Number(pair.priceUsd);
+    supply = (mc > 0 && px > 0) ? mc / px : null;
+  }
+  function renderMarket(){
+    const p = pairInfo;
+    if (p){
+      const sym = (p.baseToken && p.baseToken.symbol) || '?';
+      $('tName').textContent = (p.baseToken && p.baseToken.name) || sym;
+      $('tSymbol').textContent = sym;
+      const logo = $('tLogo');
+      const img = p.info && p.info.imageUrl;
+      if (img){ logo.innerHTML = '<img alt="" src="' + esc(img) + '" onerror="this.remove()">'; }
+      else { logo.textContent = sym.charAt(0).toUpperCase(); }
+      $('tDex').textContent = (p.dexId || '') + (p.chainId ? ' · ' + p.chainId : '');
+      $('tAge').textContent = p.pairCreatedAt ? '· ' + fmtAge(p.pairCreatedAt) : '';
+      if (p.url){ $('tLink').href = p.url; $('tLink').style.display = ''; }
+      const ch = p.priceChange || {};
+      $('tChanges').innerHTML = [['5m','m5'],['1u','h1'],['6u','h6'],['24u','h24']].map(([lbl,k]) => {
+        const s = fmtPct(ch[k]); if (s == null) return '';
+        const cls = Number(ch[k]) > 0 ? 'up' : (Number(ch[k]) < 0 ? 'down' : 'flatc');
+        return '<div class="chg ' + cls + '"><span>' + lbl + '</span>' + s + '</div>';
+      }).join('');
+      $('sLiq').textContent = fmtUsd(p.liquidity && p.liquidity.usd);
+      $('sLiqSub').textContent = p.fdv ? 'FDV ' + fmtUsd(Number(p.fdv)) : '\u00a0';
+      $('sVol').textContent = fmtUsd(p.volume && p.volume.h24);
+      $('sVolSub').textContent = p.volume && p.volume.h1 != null ? '1u: ' + fmtUsd(p.volume.h1) : '\u00a0';
+      const tx = p.txns && p.txns.h24;
+      if (tx){
+        $('sTx').innerHTML = '<span class="up">' + tx.buys + '</span> / <span class="down">' + tx.sells + '</span>';
+        const tot = tx.buys + tx.sells;
+        $('sTxSub').textContent = tot ? Math.round(tx.buys / tot * 100) + '% buys' : '\u00a0';
+      }
+    } else if (lastMode === 'manual') {
+      $('tName').textContent = 'Handmatige data';
+      $('tSymbol').textContent = 'CSV';
+      $('tLogo').textContent = '#';
+      $('tDex').textContent = 'geen live marktdata'; $('tAge').textContent = ''; $('tLink').style.display = 'none';
+      $('tChanges').innerHTML = '';
+      ['sLiq','sVol','sTx'].forEach(id => $(id).textContent = '–');
+      ['sLiqSub','sVolSub','sTxSub'].forEach(id => $(id).innerHTML = '&nbsp;');
+    }
+
+    const price = lastPrice != null ? lastPrice : (p ? Number(p.priceUsd) : null);
+    $('tPrice').textContent = price != null ? '$' + fmtPrice(price) : '–';
+
+    // market cap & ATH
+    if (supply && price != null){
+      const mcapNow = supply * price;
+      $('sMcap').textContent = fmtUsd(mcapNow);
+      $('sMcapSub').textContent = 'supply ≈ ' + (supply >= 1e9 ? (supply/1e9).toFixed(2) + 'B' : (supply/1e6).toFixed(1) + 'M');
+      if (ath.price){
+        const athMcap = supply * ath.price;
+        $('sAthMcap').textContent = fmtUsd(athMcap);
+        const pct = (price / ath.price - 1) * 100;
+        $('sAthSub').textContent = (pct >= -0.05 ? 'op ATH' : pct.toFixed(1) + '% onder ATH');
+        $('sAthBar').style.width = Math.max(1, Math.min(100, price / ath.price * 100)) + '%';
+      }
+    } else {
+      $('sMcap').textContent = '–'; $('sMcapSub').innerHTML = '&nbsp;';
+      $('sAthMcap').textContent = '–'; $('sAthSub').innerHTML = '&nbsp;'; $('sAthBar').style.width = '0%';
+    }
+    if (ath.price){
+      $('sAthPrice').textContent = '$' + fmtPrice(ath.price);
+      $('sAthDate').textContent = ath.time ? fmtTs(ath.time).split(',')[0] : '\u00a0';
+    } else { $('sAthPrice').textContent = '–'; $('sAthDate').innerHTML = '&nbsp;'; }
+  }
+
+  // ---------- render ----------
+  let currentBars = [];
+  let fitPending = false;
+
+  function render(bars){
+    if (!bars.length){ setStatus('Geen candles om te tonen.', 'err'); return; }
+    currentBars = bars;
+    const p = getParams();
+    const res = runEngine(bars, p);
+    const lastBar = bars[bars.length-1];
+    lastPrice = lastBar.close;
+
+    const windowHigh = bars.reduce((m, b) => b.high > m.v ? { v: b.high, t: b.time } : m, { v: 0, t: null });
+    if (!ath.price || windowHigh.v > ath.price){ ath = { price: windowHigh.v, time: windowHigh.t }; }
+
+    const c = chartColors();
+    setPriceFormat(lastPrice);
+    candleSeries.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    fastSeries.setData(res.series.map(s => ({ time: s.time, value: s.emaF })));
+    slowSeries.setData(res.series.map(s => ({ time: s.time, value: s.emaS })));
+    const hasVol = bars.some(b => b.volume > 0);
+    volSeries.setData(hasVol ? bars.map(b => ({ time: b.time, value: b.volume, color: (b.close >= b.open ? c.up : c.down) + '55' })) : []);
+    rsiSeries.setData(res.series.filter(s => s.rsi != null).map(s => ({ time: s.time, value: s.rsi })));
+
+    const markers = res.events.map(e => {
+      if (e.type === 'BUY') return { time: e.time, position: 'belowBar', color: c.up, shape: 'arrowUp', text: 'BUY ' + (e.src || '') };
+      if (e.type === 'TP1' || e.type === 'TP2') return { time: e.time, position: 'aboveBar', color: c.up, shape: 'circle', text: e.type };
+      return { time: e.time, position: 'aboveBar', color: c.down, shape: 'square', text: e.type };
+    });
+    candleSeries.setMarkers(markers);
+
+    if (candleSeries._priceLines) candleSeries._priceLines.forEach(l => candleSeries.removePriceLine(l));
+    candleSeries._priceLines = [];
+    const st = res.state;
+    if (st && st.inPos){
+      const addLine = (price, color, title) => candleSeries._priceLines.push(
+        candleSeries.createPriceLine({ price, color, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title }));
+      addLine(st.entry, c.text, 'Entry');
+      addLine(st.stop, c.down, st.tp1Hit ? 'Trail/BE' : 'SL');
+      if (!st.tp1Hit) addLine(st.tp1, c.up, 'TP1');
+      addLine(st.tp2, c.up, 'TP2');
+    }
+
+    updateStatusPanel(st, lastBar);
+    renderMarket();
+    if (typeof renderPaperPanel === 'function') renderPaperPanel();
+    renderBacktest(bars, p, res);
+    updateFeed(res.events);
+    if (fitPending){
+      fitPending = false;
+      const n = bars.length;
+      chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 160), to: n + 4 });
+    }
+  }
+
+  function updateStatusPanel(st, lastBar){
+    const posEl = $('stPos');
+    if (st && st.inPos){
+      posEl.innerHTML = '<span class="badge long">LONG · ' + esc(st.src || '') + '</span>';
+      $('stEntry').textContent = fmtPrice(st.entry);
+      $('stSL').textContent = fmtPrice(st.stop);
+      $('stTP1').textContent = st.tp1Hit ? 'gehaald ✓' : fmtPrice(st.tp1);
+      $('stTP2').textContent = fmtPrice(st.tp2);
+      $('stZone').textContent = st.tp1Hit ? '50% verkocht · stop volgt' : 'volledige positie';
+    } else {
+      posEl.innerHTML = '<span class="badge flat">Geen positie</span>';
+      ['stEntry','stSL','stTP1','stTP2','stZone'].forEach(id => $(id).textContent = '–');
+    }
+    $('stPrice').textContent = fmtPrice(lastBar.close);
+  }
+
+  function updateFeed(events){
+    const feedEl = $('feed');
+    const newOnes = events.filter(e => {
+      const key = e.time + '-' + e.type;
+      if (seenEventKeys.has(key)) return false;
+      seenEventKeys.add(key);
+      return true;
+    });
+    if (isFirstRenderOfSession){
+      // never auto-trade the historical backlog (also after changing settings); only genuinely new signals from here on
+      isFirstRenderOfSession = false;
+    } else {
+      if (notifOn && newOnes.length){
+        newOnes.forEach(e => { try { new Notification('Signaal: ' + e.type + (e.src ? ' (' + e.src + ')' : ''), { body: e.type + ' @ ' + fmtPrice(e.price) }); } catch(_){} });
+      }
+      if (newOnes.length){
+        handleAutoTrade(newOnes).catch(err => logTrade('FOUT', err.message));
+        try { handlePaperTrade(newOnes); } catch (err) { logPaper('FOUT', err.message); }
+      }
+    }
+    const recent = events.slice(-30).reverse();
+    if (!recent.length){ feedEl.innerHTML = '<div class="feed-empty">Nog geen signalen op deze data.</div>'; return; }
+    feedEl.innerHTML = recent.map(e =>
+      '<div class="feed-item"><span class="tag ' + e.type + '">' + e.type + '</span><span>' + fmtPrice(e.price) + (e.src ? ' · ' + esc(e.src) : '') + '</span><span class="t">' + fmtTs(e.time) + '</span></div>'
+    ).join('');
+  }
+
+  // ---------- backtest ----------
+  function pct(x){ return (x > 0 ? '+' : '') + (x * 100).toFixed(1) + '%'; }
+  function renderBacktest(bars, p, cur){
+    const el = $('btBody');
+    if (bars.length < 60){ el.innerHTML = '<div class="feed-empty">Te weinig candles voor een backtest (minimaal ~60).</div>'; return; }
+    const V = (name, pp, pre) => { const r = pre || runEngine(bars, pp); return { name, r, s: computeStats(r.trades, bars) }; };
+    const rows = [
+      V('Huidige instellingen', p, cur),
+      V('Alleen EMA-cross', Object.assign({}, p, { useEma: true, useRev: false, useBrk: false })),
+      V('Alleen Reversal (dip)', Object.assign({}, p, { useEma: false, useRev: true, useBrk: false })),
+      V('Alleen Breakout', Object.assign({}, p, { useEma: false, useRev: false, useBrk: true })),
+      V('Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true }))
+    ];
+    const hours = (bars[bars.length-1].time - bars[0].time) / 3600;
+    const body = rows.map(x => {
+      const s = x.s, cls = s.total > 0 ? 'up' : (s.total < 0 ? 'down' : '');
+      return '<tr><td>' + esc(x.name) + '</td><td>' + s.n + '</td><td>' + (s.n ? Math.round(s.winrate*100) + '%' : '–') + '</td>' +
+        '<td class="up">' + (s.n ? pct(s.avgWin) : '–') + '</td><td class="down">' + (s.n ? pct(s.avgLoss) : '–') + '</td>' +
+        '<td>' + (s.n ? (isFinite(s.pf) ? s.pf.toFixed(2) : '∞') : '–') + '</td>' +
+        '<td class="' + cls + '">' + (s.n ? pct(s.total) : '–') + '</td><td class="down">' + (s.n ? pct(s.maxDD) : '–') + '</td></tr>';
+    }).join('');
+    const bh = rows[0].s.bh;
+    let html = '<div class="tbl-wrap"><table class="bt"><thead><tr><th>Strategie</th><th>Trades</th><th>Winrate</th><th>Gem. winst</th><th>Gem. verlies</th><th>PF</th><th>Totaal</th><th>Max DD</th></tr></thead><tbody>' + body +
+      '<tr class="bh"><td>Buy &amp; hold (zelfde periode)</td><td colspan="5"></td><td class="' + (bh >= 0 ? 'up' : 'down') + '">' + pct(bh) + '</td><td></td></tr></tbody></table></div>';
+    const few = rows[0].s.n < 20;
+    html += '<div class="note">' + bars.length + ' candles (' + (hours >= 48 ? (hours/24).toFixed(1) + ' dagen' : hours.toFixed(0) + ' uur') + '), kosten/slippage ' + p.costPct + '% per trade meegerekend, PF = profit factor. ' +
+      (few ? '<b>Let op: minder dan 20 trades — dit zegt weinig; één toevallige uitschieter kan het hele resultaat bepalen.</b> ' : '') +
+      'Resultaten in het verleden garanderen niets, en instellingen die op één token goed uitpakken zijn vaak simpelweg toevallig (overfitting).</div>';
+    const last = cur.trades.slice(-8).reverse();
+    if (last.length){
+      html += '<h2 style="margin-top:14px;">Laatste trades (huidige instellingen)</h2><div class="feed">' + last.map(t =>
+        '<div class="feed-item"><span class="tag ' + (t.ret > 0 ? 'BUY' : 'SL') + '">' + (t.ret > 0 ? 'WIN' : 'LOSS') + '</span><span>' + esc(t.src) + ' · ' + fmtPrice(t.entryPrice) + ' → ' + t.exits.map(x => x.type).join('+') + '</span><span class="' + (t.ret > 0 ? 'up' : 'down') + '">' + pct(t.ret) + '</span></div>'
+      ).join('') + '</div>';
+    }
+    el.innerHTML = html;
+  }
+  function exportCsv(){
+    if (!currentBars.length){ setStatus('Laad eerst een grafiek.', 'err'); return; }
+    const csv = currentBars.map(b => [b.time, b.open, b.high, b.low, b.close, b.volume].join(',')).join('\n');
+    $('pasteData').value = csv;
+    const fallback = () => { $('advDetails').open = true; $('pasteData').select(); setStatus('Automatisch kopiëren lukte niet: de CSV staat onderaan in het tekstvak (Instellingen & data) — selecteer en kopieer die zelf.', 'err'); };
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(csv).then(() => setStatus(currentBars.length + ' candles als CSV gekopieerd — plak ze in de chat, dan test ik de strategie op je echte data.', 'ok')).catch(fallback);
+    } else fallback();
+  }
+
+
+  // ---------- paper trading (simulated, no wallet / no real funds) ----------
+  let paperState = { solBalance: 1, tokenBalance: 0, startSol: 1 };
+  function clamp0(n){ return (Number.isFinite(n) && n > 1e-12) ? n : 0; }
+  function resetPaper(){
+    const start = Math.max(0, Number($('paperStart').value) || 1);
+    paperState = { solBalance: start, tokenBalance: 0, startSol: start };
+    $('paperLog').innerHTML = '<div class="feed-empty">Nog geen paper-trades.</div>';
+    renderPaperPanel();
+  }
+  function logPaper(type, msg){
+    const el = $('paperLog');
+    if (el.querySelector('.feed-empty')) el.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'feed-item';
+    const tagClass = type === 'BUY' ? 'BUY' : (type === 'INFO' ? 'FLIP' : 'SELL');
+    row.innerHTML = '<span class="tag ' + tagClass + '">' + esc(type) + '</span><span>' + esc(msg) + '</span><span class="t">' + new Date().toLocaleTimeString('nl-NL') + '</span>';
+    el.prepend(row);
+    while (el.children.length > 60) el.removeChild(el.lastChild);
+  }
+  function renderPaperPanel(){
+    const solPx = Number($('solUsdPrice').value) || 0;
+    const tokPx = lastPrice || 0;
+    $('pSol').textContent = paperState.solBalance.toFixed(4) + ' SOL';
+    $('pTok').textContent = paperState.tokenBalance.toLocaleString('nl-NL', { maximumFractionDigits: 2 });
+    if (solPx > 0 && tokPx > 0){
+      const tokenValueSol = paperState.tokenBalance * tokPx / solPx;
+      const totalSol = paperState.solBalance + tokenValueSol;
+      $('pTotal').textContent = totalSol.toFixed(4) + ' SOL';
+      const pnl = paperState.startSol > 0 ? (totalSol / paperState.startSol - 1) * 100 : 0;
+      const el = $('pPnl');
+      el.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(1) + '%';
+      el.className = pnl > 0 ? 'up' : (pnl < 0 ? 'down' : '');
+    } else {
+      $('pTotal').textContent = 'vul SOL-prijs in'; $('pPnl').textContent = '–'; $('pPnl').className = '';
+    }
+  }
+  async function fetchSolPrice(auto){
+    try {
+      const res = await fetchWithTimeout('https://lite-api.jup.ag/price/v2?ids=' + SOL_MINT, undefined, 8000);
+      if (!res.ok) throw new Error('status ' + res.status);
+      const j = await res.json();
+      const px = j && j.data && j.data[SOL_MINT] && Number(j.data[SOL_MINT].price);
+      if (!px) throw new Error('geen prijs in antwoord');
+      $('solUsdPrice').value = px.toFixed(2);
+      renderPaperPanel();
+      if (!auto) setStatus('SOL-prijs bijgewerkt: $' + px.toFixed(2), 'ok');
+    } catch (e){
+      if (!auto) setStatus('Kon SOL-prijs niet ophalen (' + e.message + ') \u2014 vul die handmatig in.', 'err');
+    }
+  }
+  function paperBuy(pctOfSol, price, costPct){
+    if (!(price > 0)){ logPaper('BUY', 'Overgeslagen: geen geldige prijs.'); return; }
+    const solPx = Number($('solUsdPrice').value) || 0;
+    if (!(solPx > 0)){ logPaper('BUY', 'Overgeslagen: vul eerst de SOL-prijs (USD) in.'); return; }
+    const spend = clamp0(paperState.solBalance * (Math.min(100, Math.max(0, pctOfSol)) / 100));
+    if (spend <= 0){ logPaper('BUY', 'Overgeslagen: geen SOL-saldo meer.'); return; }
+    const usdSpend = spend * solPx;
+    const usdNet = usdSpend * (1 - (costPct || 0) / 100);
+    const tokensBought = usdNet / price;
+    paperState.solBalance = clamp0(paperState.solBalance - spend);
+    paperState.tokenBalance += tokensBought;
+    logPaper('BUY', spend.toFixed(4) + ' SOL → ' + tokensBought.toLocaleString('nl-NL', { maximumFractionDigits: 2 }) + ' tokens @ $' + fmtPrice(price));
+    renderPaperPanel();
+  }
+  function paperSell(pctOfTokens, price, costPct, label){
+    if (paperState.tokenBalance <= 0){ logPaper(label || 'SELL', 'Overgeslagen: geen tokens in de paper-wallet.'); return; }
+    if (!(price > 0)){ logPaper(label || 'SELL', 'Overgeslagen: geen geldige prijs.'); return; }
+    const solPx = Number($('solUsdPrice').value) || 0;
+    if (!(solPx > 0)){ logPaper(label || 'SELL', 'Overgeslagen: vul eerst de SOL-prijs (USD) in.'); return; }
+    const amount = clamp0(paperState.tokenBalance * (Math.min(100, Math.max(0, pctOfTokens)) / 100));
+    if (amount <= 0) return;
+    const usdGross = amount * price;
+    const usdNet = usdGross * (1 - (costPct || 0) / 100);
+    const solReceived = usdNet / solPx;
+    paperState.tokenBalance = clamp0(paperState.tokenBalance - amount);
+    paperState.solBalance += solReceived;
+    logPaper(label || 'SELL', amount.toLocaleString('nl-NL', { maximumFractionDigits: 2 }) + ' tokens → ' + solReceived.toFixed(4) + ' SOL @ $' + fmtPrice(price));
+    renderPaperPanel();
+  }
+  function handlePaperTrade(newEvents){
+    if (!$('paperToggle').checked || !newEvents.length) return;
+    const p = getParams();
+    const buyPct = Number($('paperBuyPct').value) || 40;
+    const sellPct = Number($('paperSellPct').value) || 90;
+    newEvents.forEach(e => {
+      if (e.type === 'BUY') paperBuy(buyPct, e.price, p.costPct);
+      else if (e.type !== 'FLIP') paperSell(sellPct, e.price, p.costPct, e.type);
+    });
+  }
+
+  // ---------- wallet + auto-trade (Phantom + Jupiter) ----------
+  function getProvider(){
+    const p = (window.phantom && window.phantom.solana) ? window.phantom.solana : window.solana;
+    return (p && p.isPhantom) ? p : null;
+  }
+  function setWalletStatus(msg, cls){
+    const el = $('walletStatus'); el.textContent = msg; el.className = 'status-line' + (cls ? (' ' + cls) : '');
+  }
+  async function connectWallet(){
+    const provider = getProvider();
+    if (!provider){ setWalletStatus('Phantom niet gevonden — installeer de extensie (en sta bestands-URL\'s toe als je lokaal opent).', 'err'); return; }
+    try {
+      const resp = await provider.connect();
+      walletPubkey = resp.publicKey.toString();
+      setWalletStatus('Verbonden: ' + walletPubkey.slice(0,4) + '…' + walletPubkey.slice(-4), 'ok');
+      $('connectBtn').textContent = 'Verbonden ✓';
+    } catch (e){ setWalletStatus('Verbinden geweigerd of mislukt.', 'err'); }
+  }
+  function base64ToBytes(b64){
+    const bin = atob(b64); const bytes = new Uint8Array(bin.length);
+    for (let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  function getConnection(){
+    return new solanaWeb3.Connection($('rpcUrl').value.trim() || 'https://api.mainnet-beta.solana.com', 'confirmed');
+  }
+  async function getTokenBalance(connection, ownerStr, mintStr){
+    const resp = await connection.getParsedTokenAccountsByOwner(new solanaWeb3.PublicKey(ownerStr), { mint: new solanaWeb3.PublicKey(mintStr) });
+    let raw = 0n, decimals = 0;
+    resp.value.forEach(acc => { const a = acc.account.data.parsed.info.tokenAmount; raw += BigInt(a.amount); decimals = a.decimals; });
+    return { raw: raw.toString(), decimals };
+  }
+  async function jupiterQuote(inputMint, outputMint, amountRaw, slippageBps){
+    const url = JUP_BASE + '/quote?inputMint=' + inputMint + '&outputMint=' + outputMint + '&amount=' + amountRaw + '&slippageBps=' + slippageBps;
+    const res = await fetchWithTimeout(url, undefined, 12000);
+    if (!res.ok) throw new Error('Jupiter quote mislukt (' + res.status + ')');
+    return res.json();
+  }
+  async function jupiterSwapTx(quoteResponse, userPublicKey){
+    const res = await fetchWithTimeout(JUP_BASE + '/swap', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quoteResponse, userPublicKey, wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true })
+    }, 12000);
+    if (!res.ok) throw new Error('Jupiter swap-tx opbouwen mislukt (' + res.status + ')');
+    const json = await res.json();
+    if (!json.swapTransaction) throw new Error('Jupiter gaf geen transactie terug');
+    return json.swapTransaction;
+  }
+  async function signAndSendTx(base64Tx){
+    const provider = getProvider();
+    if (!provider) throw new Error('wallet niet verbonden');
+    const tx = solanaWeb3.VersionedTransaction.deserialize(base64ToBytes(base64Tx));
+    const { signature } = await provider.signAndSendTransaction(tx);
+    return signature;
+  }
+  function logTrade(type, msg, sig){
+    const el = $('tradeLog');
+    if (el.querySelector('.feed-empty')) el.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'feed-item';
+    const tagClass = type === 'SELL' || type === 'SL' ? 'SELL' : (type === 'BUY' ? 'BUY' : 'FLIP');
+    const sigHtml = sig ? ' <a href="https://solscan.io/tx/' + esc(sig) + '" target="_blank" rel="noopener" style="color:var(--accent)">bekijk</a>' : '';
+    row.innerHTML = '<span class="tag ' + tagClass + '">' + esc(type) + '</span><span>' + esc(msg) + sigHtml + '</span><span class="t">' + new Date().toLocaleTimeString('nl-NL') + '</span>';
+    el.prepend(row);
+  }
+  let autoPos = false;   // true only after a BUY that the user actually signed in the wallet
+  async function executeBuy(tokenAddress){
+    const solAmount = Number($('tradeAmount').value);
+    if (!(solAmount > 0)){ logTrade('BUY', 'Overgeslagen: geen SOL-bedrag ingesteld.'); return false; }
+    if (autoPos){ logTrade('BUY', 'Overgeslagen: er staat al een auto-positie open.'); return false; }
+    const slippage = Number($('slippageBps').value) || 300;
+    logTrade('BUY', 'Quote ophalen…');
+    try {
+      const quote = await jupiterQuote(SOL_MINT, tokenAddress, Math.floor(solAmount * 1e9), slippage);
+      const swapTx = await jupiterSwapTx(quote, walletPubkey);
+      logTrade('BUY', 'Bevestig in je wallet-popup…');
+      const sig = await signAndSendTx(swapTx);
+      logTrade('BUY', 'Verzonden ✓', sig);
+      autoPos = true;
+      return true;
+    } catch (e){ logTrade('BUY', 'Mislukt of geweigerd: ' + e.message); return false; }
+  }
+  async function executeSell(tokenAddress, fraction){
+    if (!autoPos){ logTrade('SELL', 'Overgeslagen: geen door auto-trade geopende positie.'); return false; }
+    const frac = fraction || 1;
+    const slippage = Number($('slippageBps').value) || 300;
+    try {
+      const bal = await getTokenBalance(getConnection(), walletPubkey, tokenAddress);
+      let amount = BigInt(bal.raw || '0');
+      if (frac < 1) amount = amount * BigInt(Math.round(frac * 1000)) / 1000n;
+      if (amount <= 0n){ logTrade('SELL', 'Geen saldo van dit token — overgeslagen.'); autoPos = false; return false; }
+      logTrade('SELL', 'Quote ophalen (' + Math.round(frac*100) + '%)…');
+      const quote = await jupiterQuote(tokenAddress, SOL_MINT, amount.toString(), slippage);
+      const swapTx = await jupiterSwapTx(quote, walletPubkey);
+      logTrade('SELL', 'Bevestig in je wallet-popup…');
+      const sig = await signAndSendTx(swapTx);
+      logTrade('SELL', 'Verzonden ✓', sig);
+      if (frac >= 1) autoPos = false;
+      return true;
+    } catch (e){ logTrade('SELL', 'Mislukt of geweigerd: ' + e.message); return false; }
+  }
+  let tradeBusy = false;
+  async function handleAutoTrade(newEvents){
+    if (!$('autoTradeToggle').checked || !walletPubkey || !newEvents.length) return;
+    if (tradeBusy){ logTrade('INFO', 'Vorige trade nog bezig — signaal overgeslagen.'); return; }
+    tradeBusy = true;
+    try {
+      const tokenAddress = extractTokenAddress($('tokenAddr').value);
+      for (const e of newEvents){
+        if (e.type === 'BUY') await executeBuy(tokenAddress);
+        else if (e.type === 'TP1') await executeSell(tokenAddress, 0.5);
+        else if (e.type === 'TP2' || e.type === 'SL' || e.type === 'TRAIL' || e.type === 'EXIT') await executeSell(tokenAddress, 1);
+      }
+    } finally { tradeBusy = false; }
+  }
+
+  // ---------- orchestration ----------
+  function extractTokenAddress(raw){
+    const v = raw.trim();
+    if (!v || !/^https?:\/\//i.test(v)) return v;
+    try {
+      const parts = new URL(v).pathname.split('/').filter(Boolean);
+      const last = parts[parts.length - 1];
+      if (last) return last.split('?')[0];
+    } catch (e) {}
+    return v;
+  }
+  function resetSession(){ seenEventKeys = new Set(); isFirstRenderOfSession = true; ath = { price: null, time: null }; lastPrice = null; fitPending = true; }
+
+  async function loadLive(){
+    const rawInput = $('tokenAddr').value.trim();
+    let tokenAddress = extractTokenAddress(rawInput);
+    // DexScreener links contain the (lowercased) POOL address; resolve it to the real token address
+    const dexM = rawInput.match(/dexscreener\.com\/([a-z0-9-]+)\/([^\/?#\s]+)/i);
+    if (dexM){
+      setStatus('DexScreener-link herkend, token opzoeken…');
+      try {
+        const r = await fetchWithTimeout('https://api.dexscreener.com/latest/dex/pairs/' + dexM[1] + '/' + dexM[2]);
+        if (!r.ok) throw new Error('status ' + r.status);
+        const d = await r.json();
+        const pr = (d.pairs && d.pairs[0]) || d.pair;
+        if (!pr || !pr.baseToken || !pr.baseToken.address) throw new Error('geen pool gevonden');
+        tokenAddress = pr.baseToken.address;
+      } catch (e){
+        setStatus('Kon het token niet opzoeken via de DexScreener-link (' + e.message + '). Zulke links bevatten het adres in kleine letters — gebruik het token-adres via de kopieerknop op DexScreener of GMGN.', 'err');
+        return;
+      }
+    }
+    if (tokenAddress !== rawInput) $('tokenAddr').value = tokenAddress;
+    if (!tokenAddress){ setStatus('Vul eerst een token-adres in.', 'err'); return; }
+    const validSol = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(tokenAddress);
+    const validEvm = /^0x[0-9a-fA-F]{40}$/.test(tokenAddress);
+    if (!validSol && !validEvm){
+      const hint = tokenAddress === tokenAddress.toLowerCase() && !/^0x/.test(tokenAddress)
+        ? ' Het adres staat helemaal in kleine letters — Solana-adressen zijn hoofdlettergevoelig, kopieer het opnieuw met de kopieerknop van GMGN/DexScreener.'
+        : ' Kopieer het adres opnieuw met de kopieerknop van GMGN/DexScreener.';
+      setStatus('Dit is geen geldig token-adres.' + hint, 'err');
+      return;
+    }
+    const [unit, agg] = currentTf.split(':');
+    setStatus('Bezig met laden…');
+    $('loadBtn').disabled = true;
+    try {
+      const { pair, poolAddress, network } = await fetchBestPair(tokenAddress);
+      const [bars, athRes] = await Promise.all([
+        fetchOHLCV(network, poolAddress, unit, agg),
+        fetchATH(network, poolAddress).catch(() => null)
+      ]);
+      if (!bars.length) throw new Error('Geen candle-data beschikbaar voor deze pool/timeframe.');
+      lastMode = 'live';
+      lastLiveCtx = { network, poolAddress, unit, agg, tokenAddress };
+      resetSession();
+      if (athRes && athRes.price) ath = athRes;
+      setPair(pair);
+      render(bars);
+      setStatus('Geladen · ' + bars.length + ' candles · ' + new Date().toLocaleTimeString('nl-NL'), 'ok');
+      setupAutoRefresh();
+    } catch (err){
+      setStatus('Live data ophalen mislukt: ' + err.message + ' — plak eventueel je eigen candle-data onderaan.', 'err');
+    } finally { $('loadBtn').disabled = false; }
+  }
+
+  let isRefreshing = false;
+  async function refreshLive(){
+    if (lastMode !== 'live' || !lastLiveCtx || isRefreshing) return;
+    isRefreshing = true;
+    try {
+      const c = lastLiveCtx;
+      const [bars, fresh] = await Promise.all([
+        fetchOHLCV(c.network, c.poolAddress, c.unit, c.agg),
+        fetchBestPair(c.tokenAddress).catch(() => null)
+      ]);
+      if (fresh) setPair(fresh.pair);
+      if (bars.length){ render(bars); setStatus('Bijgewerkt · ' + new Date().toLocaleTimeString('nl-NL'), 'ok'); }
+    } catch (err){ setStatus('Auto-ververs mislukt: ' + err.message, 'err'); }
+    finally { isRefreshing = false; }
+  }
+  function setupAutoRefresh(){
+    if (refreshTimer) clearInterval(refreshTimer);
+    const ms = Number($('autoRefresh').value);
+    if (ms > 0) refreshTimer = setInterval(refreshLive, ms);
+  }
+  function loadManual(){
+    const bars = parsePasted($('pasteData').value);
+    if (!bars.length){ setStatus('Kon geen geldige candles uit de geplakte data halen.', 'err'); return; }
+    lastMode = 'manual'; lastLiveCtx = null; pairInfo = null; supply = null;
+    resetSession();
+    if (refreshTimer) clearInterval(refreshTimer);
+    render(bars);
+    setStatus('Geladen uit geplakte data — ' + bars.length + ' candles.', 'ok');
+  }
+
+  // ---------- events ----------
+  $('loadBtn').addEventListener('click', loadLive);
+  $('tokenAddr').addEventListener('keydown', e => { if (e.key === 'Enter') loadLive(); });
+  $('useManualBtn').addEventListener('click', loadManual);
+  $('connectBtn').addEventListener('click', connectWallet);
+  $('paperResetBtn').addEventListener('click', resetPaper);
+  $('solPriceBtn').addEventListener('click', () => fetchSolPrice(false));
+  $('paperStart').addEventListener('change', resetPaper);
+  $('paperToggle').addEventListener('change', () => {
+    if ($('paperToggle').checked && !(Number($('solUsdPrice').value) > 0)) fetchSolPrice(true);
+  });
+  $('autoRefresh').addEventListener('change', setupAutoRefresh);
+  $('tfPills').addEventListener('click', e => {
+    const b = e.target.closest('.pill'); if (!b) return;
+    document.querySelectorAll('.pill').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    currentTf = b.dataset.tf;
+    if (lastMode === 'live') loadLive();
+  });
+  ['emaFastLen','emaSlowLen','atrLen','atrMultSL','rrTp1','rrTp2','confirmCandle','confirmWindow',
+   'rsiLen','rsiOS','rsiLookback','revBody','sweepLen','donLen','volMult','trailMult','partialFrac',
+   'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk'].forEach(id => {
+    $(id).addEventListener('change', () => { if (lastMode === 'manual') loadManual(); else if (lastMode === 'live') renderCurrentParamsOnly(); });
+  });
+  $('exportCsvBtn').addEventListener('click', exportCsv);
+  function renderCurrentParamsOnly(){
+    // re-run the engine on the bars already in memory (no network call) so toggling
+    // signal types / R:R feels instant instead of waiting for a fresh fetch
+    if (currentBars.length){ seenEventKeys = new Set(); isFirstRenderOfSession = true; render(currentBars); }
+  }
+  $('notifBtn').addEventListener('click', async () => {
+    if (!('Notification' in window)){ setStatus('Browser ondersteunt geen meldingen.', 'err'); return; }
+    const perm = await Notification.requestPermission();
+    notifOn = perm === 'granted';
+    $('notifBtn').textContent = notifOn ? '🔔 Meldingen actief' : '🔕 Geweigerd';
+  });
+  $('themeBtn').addEventListener('click', () => {
+    const root = document.documentElement;
+    const isDark = root.dataset.theme ? root.dataset.theme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = isDark ? 'light' : 'dark';
+    applyChartTheme();
+    if (lastMode) refreshLive_or_rerender();
+  });
+  function refreshLive_or_rerender(){ /* recolor markers/lines on next tick */ setTimeout(() => { if (lastMode === 'manual') loadManual(); else refreshLive(); }, 50); }
+
+  initChart();
+  renderMarket();
+  resetPaper();
+  fetchSolPrice(true);
+})();
+</script>
+</body>
+</html>

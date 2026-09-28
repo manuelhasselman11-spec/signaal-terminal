@@ -1,0 +1,6 @@
+# Dit bestand is optioneel. In het Railway-dashboard maak je
+# Twee services van dezelfde repo:
+#   Web    → start command: npm start
+#   Worker → start command: npm run worker
+#
+# De worker krijgt GEEN public domain.

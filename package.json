@@ -1,0 +1,13 @@
+{
+  "name": "signaal-terminal-railway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Signaal Terminal website + 24/7 signal worker for Railway",
+  "scripts": {
+    "start": "node server.js",
+    "worker": "node worker.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
