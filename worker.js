@@ -4,7 +4,10 @@
  * Live swaps: alleen als ENABLE_LIVE_TRADES=1 en PRIVATE_KEY in Railway Variables.
  */
 const { liveEnabled, handleLiveEvents } = require('./liveTrade');
-const TOKEN = (process.env.TOKEN_ADDRESS || '').trim();
+const TOKEN_LIST = (process.env.TOKEN_ADDRESS || '')
+  .split(/[,;\s]+/)
+  .map(s => s.trim())
+  .filter(Boolean);
 const TIMEFRAME = process.env.TIMEFRAME || 'minute:5';
 const POLL_MS = Math.max(10000, Number(process.env.POLL_MS) || 30000);
 const TG_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
@@ -45,7 +48,7 @@ function getParams() {
     trailMult: num('TRAIL_MULT', 2.5),
     partialFrac: Math.min(1, Math.max(0.1, num('PARTIAL_FRAC', 0.5))),
     costPct: num('COST_PCT', 1),
-    cooldown: num('COOLDOWN', 3),
+    cooldown: num('COOLDOWN', 0),
     beAfterTp1: flag('BE_AFTER_TP1', true),
     exitOnCross: flag('EXIT_ON_CROSS', false),
     useEma: flag('USE_EMA', true),
@@ -239,49 +242,64 @@ async function notify(text) {
 }
 
 const seen = new Set();
-let first = true;
-let ctx = null;
+const firstByToken = new Map();
+const ctxByToken = new Map();
 
-async function tick() {
-  if (!TOKEN) throw new Error('Zet TOKEN_ADDRESS in de Railway variables');
+async function tickOne(token) {
   const [unit, agg] = TIMEFRAME.split(':');
+  let ctx = ctxByToken.get(token);
   if (!ctx) {
-    ctx = await fetchBestPair(TOKEN);
-    const name = (ctx.pair.baseToken && ctx.pair.baseToken.symbol) || TOKEN.slice(0, 6);
-    await notify('Worker gestart · ' + name + ' · ' + TIMEFRAME);
+    ctx = await fetchBestPair(token);
+    ctxByToken.set(token, ctx);
+    const name = (ctx.pair.baseToken && ctx.pair.baseToken.symbol) || token.slice(0, 6);
+    await notify('Watch · ' + name + ' · ' + TIMEFRAME);
   }
   const bars = await fetchOHLCV(ctx.network, ctx.poolAddress, unit, agg);
   if (bars.length < 60) {
-    console.log('te weinig candles', bars.length);
+    console.log(token.slice(0, 6), 'te weinig candles', bars.length);
     return;
   }
   const res = runEngine(bars, getParams());
+  const tag = ((ctx.pair.baseToken && ctx.pair.baseToken.symbol) || token.slice(0, 6));
   const fresh = [];
   for (const e of res.events) {
-    const key = e.time + '-' + e.type;
+    const key = token + '-' + e.time + '-' + e.type;
     if (seen.has(key)) continue;
     seen.add(key);
     fresh.push(e);
   }
-  if (first) {
-    first = false;
-    console.log('historische signalen overgeslagen:', res.events.length, '· laatste prijs', fmtPrice(res.last.close));
+  if (!firstByToken.get(token)) {
+    firstByToken.set(token, true);
+    console.log(tag, 'historie overgeslagen:', res.events.length, '· $' + fmtPrice(res.last.close));
     return;
   }
   for (const e of fresh) {
     const line = [
+      tag,
       e.type,
       e.src ? '(' + e.src + ')' : '',
-      '@ $' + fmtPrice(e.price),
-      res.inPos ? 'positie open' : 'flat'
+      '@ $' + fmtPrice(e.price)
     ].filter(Boolean).join(' ');
     await notify(line);
   }
   if (liveEnabled() && fresh.length) {
-    await handleLiveEvents(fresh, TOKEN);
+    await handleLiveEvents(fresh, token);
   }
   if (!fresh.length) {
-    console.log(new Date().toISOString(), 'geen nieuw signaal · $' + fmtPrice(res.last.close));
+    console.log(new Date().toISOString(), tag, 'geen nieuw signaal · $' + fmtPrice(res.last.close));
+  }
+}
+
+async function tick() {
+  if (!TOKEN_LIST.length) throw new Error('Zet TOKEN_ADDRESS in Railway (één mint of mint1,mint2,mint3)');
+  for (const token of TOKEN_LIST) {
+    try {
+      await tickOne(token);
+    } catch (err) {
+      console.error('tick fout', token.slice(0, 6), err.message);
+      ctxByToken.delete(token);
+    }
+    await new Promise(r => setTimeout(r, 1200));
   }
 }
 
@@ -290,10 +308,9 @@ async function loop() {
     await tick();
   } catch (err) {
     console.error('tick fout', err.message);
-    ctx = null;
   }
   setTimeout(loop, POLL_MS);
 }
 
-console.log('Signaal worker start. Token=', TOKEN || '(LEEG)', 'tf=', TIMEFRAME, 'poll=', POLL_MS + 'ms');
+console.log('Signaal worker start. Tokens=', TOKEN_LIST.length ? TOKEN_LIST.length : '(LEEG)', TOKEN_LIST.map(t => t.slice(0,6)).join(','), 'tf=', TIMEFRAME, 'poll=', POLL_MS + 'ms');
 loop();
