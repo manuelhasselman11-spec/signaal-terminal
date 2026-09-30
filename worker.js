@@ -1,15 +1,20 @@
 /**
- * 24/7 signal worker — zelfde logica als de web-app.
+ * 24/7 signal worker — zelfde strategie als de web-app.
  * Standaard: alleen logs + optioneel Telegram.
- * Live swaps: alleen als ENABLE_LIVE_TRADES=1 en PRIVATE_KEY in Railway Variables.
+ * Live swaps: alleen als ENABLE_LIVE_TRADES=1 en PRIVATE_KEY in Railway Variables (zie liveTrade.js).
+ *
+ * Variables: TOKEN_ADDRESS (mint1,mint2,…), TIMEFRAME (minute:5), POLL_MS (30000),
+ *            STOPWATCH_MS (5000, 0 = uit), TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+ *            plus de strategie-instellingen (EMA_FAST, EMA_SLOW, ATR_MULT_SL, RR_TP1, RR_TP2, …).
  */
-const { liveEnabled, handleLiveEvents } = require('./liveTrade');
+const live = require('./liveTrade');
 const TOKEN_LIST = (process.env.TOKEN_ADDRESS || '')
   .split(/[,;\s]+/)
   .map(s => s.trim())
   .filter(Boolean);
 const TIMEFRAME = process.env.TIMEFRAME || 'minute:5';
 const POLL_MS = Math.max(10000, Number(process.env.POLL_MS) || 30000);
+const STOPWATCH_MS = process.env.STOPWATCH_MS === '0' ? 0 : Math.max(2000, Number(process.env.STOPWATCH_MS) || 5000);
 const TG_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const TG_CHAT = (process.env.TELEGRAM_CHAT_ID || '').trim();
 
@@ -191,15 +196,24 @@ function runEngine(bars, p) {
   return { events, inPos, entry, stop, tp1, tp2, src, last: bars[n - 1] };
 }
 
-async function fetchJson(url, ms = 12000) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    if (!res.ok) throw new Error(res.status + ' ' + url);
-    return res.json();
-  } finally {
-    clearTimeout(t);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// fetch with timeout; on 429 (too many requests) or a network error: wait and try again
+async function fetchJson(url, ms = 12000, tries = 3){
+  for (let attempt = 0; ; attempt++){
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (res.status === 429 && attempt < tries){
+        const ra = Number(res.headers.get('retry-after'));
+        await sleep((ra > 0 ? Math.min(ra, 30) : 3 * (attempt + 1)) * 1000); continue;
+      }
+      if (!res.ok) throw new Error(res.status + ' ' + url);
+      return await res.json();
+    } catch (e){
+      if (attempt >= tries || /^\d{3} /.test(e.message)) throw e;
+      await sleep(2000 * (attempt + 1));
+    } finally { clearTimeout(t); }
   }
 }
 
@@ -216,7 +230,8 @@ async function fetchOHLCV(network, poolAddress, unit, aggregate) {
   const url = 'https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + poolAddress + '/ohlcv/' + unit + '?aggregate=' + aggregate + '&limit=300';
   const json = await fetchJson(url);
   const list = (json.data && json.data.attributes && json.data.attributes.ohlcv_list) || [];
-  const bars = list.map(r => ({ time: r[0], open: r[1], high: r[2], low: r[3], close: r[4], volume: r[5] }));
+  const bars = list.map(r => ({ time: Number(r[0]), open: Number(r[1]), high: Number(r[2]), low: Number(r[3]), close: Number(r[4]), volume: Number(r[5]) }))
+    .filter(b => b.close > 0);
   bars.sort((a, b) => a.time - b.time);
   return bars;
 }
@@ -232,61 +247,104 @@ function fmtPrice(n) {
 async function notify(text) {
   console.log(new Date().toISOString(), text.replace(/\n/g, ' | '));
   if (!TG_TOKEN || !TG_CHAT) return;
-  const url = 'https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage';
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: TG_CHAT, text, disable_web_page_preview: true })
-  });
-  if (!res.ok) console.error('Telegram fout', res.status, await res.text());
+  try {
+    const res = await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TG_CHAT, text, disable_web_page_preview: true })
+    });
+    if (!res.ok) console.error('Telegram fout', res.status, await res.text());
+  } catch (e){ console.error('Telegram fout', e.message); }
 }
+live.setNotify(notify);
 
-const seen = new Set();
-const firstByToken = new Map();
-const ctxByToken = new Map();
+// per coin: pool, seen signals, the candle that was still forming at the previous tick, latest strategy state
+const coins = new Map();
+function coin(token){
+  let c = coins.get(token);
+  if (!c){ c = { ctx: null, seen: new Set(), first: true, cutoff: null, engine: null, lastSync: 0, lastWatchFire: 0 }; coins.set(token, c); }
+  return c;
+}
+function infoOf(c, token){
+  const p = c.ctx && c.ctx.pair;
+  return { symbol: (p && p.baseToken && p.baseToken.symbol) || token.slice(0, 6), liquidityUsd: p && p.liquidity ? Number(p.liquidity.usd) : NaN, partialFrac: getParams().partialFrac };
+}
 
 async function tickOne(token) {
   const [unit, agg] = TIMEFRAME.split(':');
-  let ctx = ctxByToken.get(token);
-  if (!ctx) {
-    ctx = await fetchBestPair(token);
-    ctxByToken.set(token, ctx);
-    const name = (ctx.pair.baseToken && ctx.pair.baseToken.symbol) || token.slice(0, 6);
-    await notify('Watch · ' + name + ' · ' + TIMEFRAME);
+  const c = coin(token);
+  if (!c.ctx) {
+    c.ctx = await fetchBestPair(token);
+    await notify('Watch · ' + infoOf(c, token).symbol + ' · ' + TIMEFRAME);
   }
-  const bars = await fetchOHLCV(ctx.network, ctx.poolAddress, unit, agg);
+  const bars = await fetchOHLCV(c.ctx.network, c.ctx.poolAddress, unit, agg);
   if (bars.length < 60) {
     console.log(token.slice(0, 6), 'te weinig candles', bars.length);
-    return;
+    return [];
   }
   const res = runEngine(bars, getParams());
-  const tag = ((ctx.pair.baseToken && ctx.pair.baseToken.symbol) || token.slice(0, 6));
+  c.engine = { inPos: res.inPos, stop: res.stop, entry: res.entry, time: Date.now() };
+  const tag = infoOf(c, token).symbol;
+  const formingTime = bars[bars.length - 1].time;
+  // Only candles that were still forming at the previous tick (or newer) can hold new signals. Older candles were
+  // already closed and evaluated; a signal that "appears" there comes from the 300-candle window shifting → stale.
   const fresh = [];
+  let stale = 0;
   for (const e of res.events) {
-    const key = token + '-' + e.time + '-' + e.type;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (e.type === 'BUY' && e.time === formingTime) continue;   // candle not closed yet: a BUY can still disappear
+    const key = e.time + '-' + e.type;
+    if (c.seen.has(key)) continue;
+    c.seen.add(key);
+    if (!c.first && c.cutoff != null && e.time < c.cutoff) { stale++; continue; }
     fresh.push(e);
   }
-  if (!firstByToken.get(token)) {
-    firstByToken.set(token, true);
+  c.cutoff = formingTime;
+  if (c.seen.size > 5000) c.seen = new Set([...c.seen].slice(-2000));
+  if (c.first) {
+    c.first = false;
     console.log(tag, 'historie overgeslagen:', res.events.length, '· $' + fmtPrice(res.last.close));
-    return;
+    return [];
   }
+  if (stale) console.log(tag, stale, 'oud signaal/signalen genegeerd (verschoven candle-venster)');
   for (const e of fresh) {
-    const line = [
-      tag,
-      e.type,
-      e.src ? '(' + e.src + ')' : '',
-      '@ $' + fmtPrice(e.price)
-    ].filter(Boolean).join(' ');
-    await notify(line);
+    await notify([tag, e.type, e.src ? '(' + e.src + ')' : '', '@ $' + fmtPrice(e.price)].filter(Boolean).join(' '));
   }
-  if (liveEnabled() && fresh.length) {
-    await handleLiveEvents(fresh, token);
+  if (live.liveEnabled()) {
+    if (fresh.length) await live.handleLiveEvents(fresh, token, infoOf(c, token));
+    await syncOne(token, c);
   }
-  if (!fresh.length) {
-    console.log(new Date().toISOString(), tag, 'geen nieuw signaal · $' + fmtPrice(res.last.close));
+  if (!fresh.length) console.log(new Date().toISOString(), tag, 'geen nieuw signaal · $' + fmtPrice(res.last.close));
+  return fresh;
+}
+
+// strategy is out, but the bot wallet still holds the coin (a sell failed) → try again, at most once a minute
+async function syncOne(token, c){
+  if (!c.engine || c.engine.inPos) return;
+  if (!(await live.positionOpen(token))) return;
+  if (Date.now() - c.lastSync < 60000) return;
+  c.lastSync = Date.now();
+  await notify('SYNC ' + infoOf(c, token).symbol + ': strategie is uit de positie maar de wallet heeft het token nog — opnieuw verkopen');
+  await live.handleLiveEvents([{ type: 'SYNC' }], token, infoOf(c, token));
+}
+
+// Stop-watch: between candle refreshes, check the live price every few seconds against the strategy's stop.
+async function stopWatchTick(){
+  if (!live.liveEnabled() || !STOPWATCH_MS) return;
+  const open = TOKEN_LIST.filter(t => { const c = coins.get(t); return c && c.engine && c.engine.inPos && c.engine.stop > 0 && live.isOpen(t); });
+  if (!open.length) return;
+  let data;
+  try { data = await fetchJson('https://api.dexscreener.com/latest/dex/tokens/' + open.slice(0, 30).join(','), 8000, 1); }
+  catch (e){ console.error('stop-wachter: prijs ophalen mislukt', e.message); return; }
+  for (const token of open){
+    const c = coins.get(token);
+    const pairs = ((data && data.pairs) || []).filter(p => p.baseToken && p.baseToken.address === token)
+      .sort((a, b) => ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0));
+    const price = pairs.length ? Number(pairs[0].priceUsd) : NaN;
+    if (!(price > 0) || price > c.engine.stop) continue;
+    if (Date.now() - c.lastWatchFire < 30000) continue;
+    c.lastWatchFire = Date.now();
+    await notify('🛑 Stop-wachter ' + infoOf(c, token).symbol + ': prijs $' + fmtPrice(price) + ' onder stop $' + fmtPrice(c.engine.stop) + ' — direct verkopen');
+    await live.handleLiveEvents([{ type: 'SL', price }], token, infoOf(c, token));
   }
 }
 
@@ -297,20 +355,23 @@ async function tick() {
       await tickOne(token);
     } catch (err) {
       console.error('tick fout', token.slice(0, 6), err.message);
-      ctxByToken.delete(token);
+      coin(token).ctx = null;
     }
-    await new Promise(r => setTimeout(r, 1200));
+    await sleep(1200);
   }
 }
 
 async function loop() {
-  try {
-    await tick();
-  } catch (err) {
-    console.error('tick fout', err.message);
-  }
+  try { await tick(); } catch (err) { console.error('tick fout', err.message); }
   setTimeout(loop, POLL_MS);
 }
 
-console.log('Signaal worker start. Tokens=', TOKEN_LIST.length ? TOKEN_LIST.length : '(LEEG)', TOKEN_LIST.map(t => t.slice(0,6)).join(','), 'tf=', TIMEFRAME, 'poll=', POLL_MS + 'ms');
-loop();
+async function start(){
+  console.log('Signaal worker start. Tokens=', TOKEN_LIST.length ? TOKEN_LIST.length : '(LEEG)', TOKEN_LIST.map(t => t.slice(0, 6)).join(','), 'tf=', TIMEFRAME, 'poll=', POLL_MS + 'ms', 'stop-wachter=', STOPWATCH_MS ? STOPWATCH_MS + 'ms' : 'uit');
+  try { await notify(await live.startupReport()); } catch (e){ console.error('LIVE start-fout:', e.message); }
+  loop();
+  if (STOPWATCH_MS) setInterval(() => { stopWatchTick().catch(e => console.error('stop-wachter fout', e.message)); }, STOPWATCH_MS);
+}
+
+if (require.main === module) start();
+module.exports = { runEngine, getParams, tickOne, stopWatchTick, syncOne, coins, start };
