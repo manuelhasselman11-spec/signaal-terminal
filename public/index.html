@@ -241,7 +241,7 @@
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">S</div>
-      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 02-10 (filters)</small></div>
+      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 04-10 (slimmer)</small></div>
     </div>
     <div class="search">
       <input id="tokenAddr" value="" spellcheck="false" placeholder="Plak token-adres of link (DexScreener / GMGN / pump.fun)…">
@@ -491,6 +491,7 @@
         <div class="field"><label>Reversal: min. bouncekaars (×ATR)</label><input id="revBody" type="number" value="0.5" min="0" step="0.1"></div>
         <div class="field"><label><input type="checkbox" id="useTrend" checked> Trendfilter: alleen kopen boven stijgende EMA</label><input id="trendLen" type="number" value="50" min="5" step="1" title="lengte van de trend-EMA"></div>
         <div class="field"><label>Kostenfilter: TP1 minimaal × kosten (0 = uit)</label><input id="minEdge" type="number" value="2" min="0" step="0.5"></div>
+        <div class="field"><label><input type="checkbox" id="useHtf"> Grotere timeframe moet ook stijgen (× candles)</label><input id="htfMult" type="number" value="4" min="2" step="1" title="4 = bij 15m-candles kijkt hij naar 1-uurs-trend"></div>
         <div class="field"><label>Sweep: vergelijk N candles terug</label><input id="sweepLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: N-candle high</label><input id="donLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: volume × gemiddelde</label><input id="volMult" type="number" value="1.5" min="0.5" step="0.1"></div>
@@ -736,6 +737,20 @@
     const useTrend = p.useTrend !== false && p.trendLen > 1;
     const emaT = useTrend ? computeEMA(C, p.trendLen) : null;
     const warm = Math.max(p.emaSlowLen, p.atrLen + 1, p.rsiLen + 1, p.donLen + 1, p.sweepLen + 1, 5, useTrend ? Math.min(p.trendLen, 40) : 0);
+    // higher-timeframe filter: every htfMult candles form one bigger candle; only buy when that bigger trend is up.
+    // Uses only bigger candles that are already finished at this moment (no peeking ahead).
+    const useHtf = !!p.useHtf && p.htfMult > 1 && p.htfLen > 1;
+    let emaH = null;
+    if (useHtf){
+      const hc = [];
+      for (let g = 0; (g + 1) * p.htfMult - 1 < n; g++) hc.push(C[(g + 1) * p.htfMult - 1]);
+      emaH = computeEMA(hc, p.htfLen);
+    }
+    const htfOkAt = i => {
+      if (!useHtf) return true;
+      const g = Math.floor(i / p.htfMult), done = (i % p.htfMult === p.htfMult - 1) ? g : g - 1;
+      return done >= 1 && emaH[done] != null && C[i] > emaH[done] && emaH[done] > emaH[done - 1];
+    };
 
     let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1, entryTime = 0;
     let curExits = [];
@@ -812,7 +827,7 @@
           if (C[i] > hi && volOk) tags.push('BRK');
         }
 
-        const trendOk = !useTrend || (C[i] > emaT[i] && emaT[i] > emaT[i-3]);
+        const trendOk = (!useTrend || (C[i] > emaT[i] && emaT[i] > emaT[i-3])) && htfOkAt(i);
         if (tags.length && trendOk){
           const swingLow = Math.min(L[i], L[i-1], L[i-2]);
           const stopPx = swingLow - atr[i]*p.atrMultSL;
@@ -1042,7 +1057,8 @@
       beAfterTp1: $('beAfterTp1').checked, exitOnCross: $('exitOnCross').checked,
       useEma: $('useEma').checked, useRev: $('useRev').checked, useBrk: $('useBrk').checked,
       useTrend: $('useTrend').checked, trendLen: Number($('trendLen').value) || 50,
-      minEdge: $('minEdge').value === '' ? 2 : Number($('minEdge').value)
+      minEdge: $('minEdge').value === '' ? 2 : Number($('minEdge').value),
+      useHtf: $('useHtf').checked, htfMult: Number($('htfMult').value) || 4, htfLen: 20
     };
   }
 
@@ -1285,6 +1301,7 @@
       V('Alleen Breakout', Object.assign({}, p, { useEma: false, useRev: false, useBrk: true })),
       V('Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })),
       V('Zonder trend- en kostenfilter', Object.assign({}, p, { useTrend: false, minEdge: 0 })),
+      V('Met grotere-timeframe-filter', Object.assign({}, p, { useHtf: true })),
       V('Scalp (snel winst nemen)', Object.assign({}, p, SCALP))
     ];
     const hours = (bars[bars.length-1].time - bars[0].time) / 3600;
@@ -2196,6 +2213,7 @@
         ['Alleen Breakout', Object.assign({}, p, { useEma: false, useRev: false, useBrk: true })],
         ['Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })],
         ['Zonder trend- en kostenfilter', Object.assign({}, p, { useTrend: false, minEdge: 0 })],
+        ['Met grotere-timeframe-filter', Object.assign({}, p, { useHtf: true })],
         ['Scalp (snel winst nemen)', Object.assign({}, p, SCALP)]
       ];
       const periodBars = bars.filter(b => b.time >= firstIn.time);
@@ -2229,7 +2247,7 @@
   const SET_KEY = 'signaalTerminal.settings.v1';
   const SETTING_IDS = ['emaFastLen','emaSlowLen','atrLen','atrMultSL','rrTp1','rrTp2','confirmCandle','confirmWindow',
     'rsiLen','rsiOS','rsiLookback','revBody','sweepLen','donLen','volMult','trailMult','partialFrac',
-    'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge',
+    'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge','useHtf','htfMult',
     'paperBuyPct','maxSolPerBuy','slippageBps','maxRoundTrip','wkEur','wkDays','wkStake','wkTf',
     'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq'];
   function saveSettings(){
@@ -2289,8 +2307,8 @@
     ];
     const combos = [];
     [3, 5, 8, 12].forEach(f => [13, 21, 34, 55].forEach(sl => { if (f < sl)
-      [0.8, 1.0, 1.5, 2.0].forEach(a => [0.8, 1.0, 1.5].forEach(t1 => [2, 3, 5].forEach(t2 => sets.forEach(([nm, flags]) => [true, false].forEach(tr =>
-        combos.push({ nm: nm + (tr ? ' · trend' : ''), p: Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr }) }))))));
+      [0.8, 1.0, 1.5, 2.0].forEach(a => [0.8, 1.0, 1.5].forEach(t1 => [2, 3, 5].forEach(t2 => sets.forEach(([nm, flags]) => [true, false].forEach(tr => [false, true].forEach(hf =>
+        combos.push({ nm: nm + (tr ? ' · trend' : '') + (hf ? ' · grote tf' : ''), p: Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr, useHtf: hf }) })))))));
     }));
     const score = trades => {
       let e = 1, peak = 1, dd = 0; trades.forEach(t => { e *= 1 + stake * t.ret; peak = Math.max(peak, e); dd = Math.min(dd, e / peak - 1); });
@@ -2336,7 +2354,7 @@
     el.querySelectorAll('[data-opt]').forEach(btn => btn.addEventListener('click', () => {
       const r = top[Number(btn.dataset.opt)]; if (!r) return;
       ['emaFastLen','emaSlowLen','atrMultSL','rrTp1','rrTp2'].forEach(k => { $(k).value = r.p[k]; });
-      ['useEma','useRev','useBrk','useTrend'].forEach(k => { $(k).checked = r.p[k]; });
+      ['useEma','useRev','useBrk','useTrend','useHtf'].forEach(k => { $(k).checked = !!r.p[k]; });
       saveSettings(); renderCurrentParamsOnly();
       btn.textContent = 'Toegepast ✓';
     }));
