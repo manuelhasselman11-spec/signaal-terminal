@@ -179,7 +179,8 @@ async function doBuy(mint, s, info){
   if (d.buys >= maxBuys) return say('LIVE BUY overgeslagen: al ' + d.buys + ' buys vandaag (max ' + maxBuys + ')');
   if (-d.pnlSol >= maxLoss) return say('LIVE BUY overgeslagen: dagverlies ' + (-d.pnlSol).toFixed(4) + ' SOL ≥ max ' + maxLoss + ' — morgen weer');
   const owner = loadKeypair();
-  const buySol = env('TRADE_AMOUNT_SOL', 0.01);
+  const mult = Math.min(1, Math.max(0.25, Number(info && info.stakeMult) || 1));   // never more than the normal amount
+  const buySol = Math.round(env('TRADE_AMOUNT_SOL', 0.01) * mult * 1e6) / 1e6;
   const reserve = env('MIN_SOL_RESERVE', 0.01);
   const bal = await solBalance(owner);
   if (bal < buySol + reserve) return say('LIVE BUY overgeslagen: SOL-saldo ' + bal.toFixed(4) + ' < ' + (buySol + reserve).toFixed(4) + ' (inzet + reserve)');
@@ -191,7 +192,7 @@ async function doBuy(mint, s, info){
   const raw = await tokenRawBalance(owner, mint);
   if (raw <= 0n) throw new Error('buy bevestigd maar geen tokens ontvangen (' + sig + ')');
   s.open = true; s.tp1Done = false; s.spentSol = buySol; d.buys++;
-  await say('✅ LIVE BUY ' + buySol + ' SOL · ' + (info && info.symbol || mint.slice(0, 6)) + ' · https://solscan.io/tx/' + sig);
+  await say('✅ LIVE BUY ' + buySol + ' SOL' + (mult < 1 ? ' (verkleind na verliesreeks)' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · https://solscan.io/tx/' + sig);
 }
 
 async function doSell(mint, s, label, frac, info){

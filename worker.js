@@ -15,7 +15,10 @@
  *            AUTO_COINS (0) = 1–5: de bot kiest zelf zoveel coins uit bekende memes (AUTO_LIST) met dezelfde toets als de website,
  *            AUTO_MIN_LIQ_USD (1000000), AUTO_LIST (TRUMP,PENGU,BONK,…),
  *            MAX_TOTAL_LOSS_SOL (0.1) = stopt met kopen als het totale resultaat zoveel SOL verlies is (/hervat = doorgaan),
- *            DATA_DIR = map om geheugen te bewaren (Railway Volume: wordt automatisch gevonden).
+ *            DATA_DIR = map om geheugen te bewaren (Railway Volume: wordt automatisch gevonden),
+ *            LIVE_LEARN_N (4) / LIVE_PAUSE_H (24) = pauzeer een coin als ≥3 van de laatste 4 ECHTE trades verlies waren (0 = uit),
+ *            STAKE_ADAPT (1) = na 2 verliezen op rij de helft inzetten tot de volgende winst (nooit méér dan normaal),
+ *            USE_HTF (0), HTF_MULT (4) = alleen kopen als de 4× grotere timeframe ook stijgt (auto-tune kiest dit per coin).
  *            plus de strategie-instellingen (EMA_FAST, EMA_SLOW, ATR_MULT_SL, RR_TP1, RR_TP2, …).
  */
 const live = require('./liveTrade');
@@ -72,7 +75,10 @@ function getParams() {
     useBrk: flag('USE_BRK', true),
     useTrend: flag('USE_TREND', true),
     trendLen: num('TREND_LEN', 50),
-    minEdge: num('MIN_EDGE', 2)
+    minEdge: num('MIN_EDGE', 2),
+    useHtf: flag('USE_HTF', false),
+    htfMult: num('HTF_MULT', 4),
+    htfLen: 20
   };
 }
 
@@ -127,6 +133,20 @@ function runEngine(bars, p) {
   const useTrend = p.useTrend !== false && p.trendLen > 1;
   const emaT = useTrend ? computeEMA(C, p.trendLen) : null;
   const warm = Math.max(p.emaSlowLen, p.atrLen + 1, p.rsiLen + 1, p.donLen + 1, p.sweepLen + 1, 5, useTrend ? Math.min(p.trendLen, 40) : 0);
+  // higher-timeframe filter: every htfMult candles form one bigger candle; only buy when that bigger trend is up.
+  // Uses only bigger candles that are already finished at this moment (no peeking ahead).
+  const useHtf = !!p.useHtf && p.htfMult > 1 && p.htfLen > 1;
+  let emaH = null;
+  if (useHtf){
+    const hc = [];
+    for (let g = 0; (g + 1) * p.htfMult - 1 < n; g++) hc.push(C[(g + 1) * p.htfMult - 1]);
+    emaH = computeEMA(hc, p.htfLen);
+  }
+  const htfOkAt = i => {
+    if (!useHtf) return true;
+    const g = Math.floor(i / p.htfMult), done = (i % p.htfMult === p.htfMult - 1) ? g : g - 1;
+    return done >= 1 && emaH[done] != null && C[i] > emaH[done] && emaH[done] > emaH[done - 1];
+  };
 
   let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1;
   let lastBullCross = -1e9, crossUsed = true, lastExitIdx = -1e9;
@@ -197,7 +217,7 @@ function runEngine(bars, p) {
         if (C[i] > hi && volOk) tags.push('BRK');
       }
 
-      const trendOk = !useTrend || (C[i] > emaT[i] && emaT[i] > emaT[i - 3]);
+      const trendOk = (!useTrend || (C[i] > emaT[i] && emaT[i] > emaT[i - 3])) && htfOkAt(i);
       if (tags.length && trendOk) {
         const swingLow = Math.min(L[i], L[i - 1], L[i - 2]);
         const stopPx = swingLow - atr[i] * p.atrMultSL;
@@ -316,7 +336,8 @@ function coin(token){
 function paramsFor(c){ return Object.assign(getParams(), (c && c.params) || {}); }
 function infoOf(c, token){
   const p = c.ctx && c.ctx.pair;
-  return { symbol: (p && p.baseToken && p.baseToken.symbol) || token.slice(0, 6), liquidityUsd: p && p.liquidity ? Number(p.liquidity.usd) : NaN, partialFrac: paramsFor(c).partialFrac };
+  return { symbol: (p && p.baseToken && p.baseToken.symbol) || token.slice(0, 6), liquidityUsd: p && p.liquidity ? Number(p.liquidity.usd) : NaN, partialFrac: paramsFor(c).partialFrac,
+    stakeMult: typeof stakeMult === 'function' ? stakeMult() : 1 };
 }
 
 async function tickOne(token) {
@@ -371,6 +392,10 @@ async function tickOne(token) {
     }
     if (exitOnly(token) && todo.some(e => e.type === 'BUY')){
       console.log(tag, 'BUY overgeslagen: coin staat niet meer op de lijst (alleen nog verkopen)');
+      todo = todo.filter(e => e.type !== 'BUY');
+    }
+    if ((c.livePauseUntil || 0) > Date.now() && todo.some(e => e.type === 'BUY')){
+      console.log(tag, 'BUY overgeslagen: pauze na verliezen in echte trades tot', new Date(c.livePauseUntil).toISOString());
       todo = todo.filter(e => e.type !== 'BUY');
     }
     if (c.paused && todo.some(e => e.type === 'BUY')){
@@ -462,13 +487,13 @@ function tuneGrid(base){
     { useEma: true, useRev: false, useBrk: true }, { useEma: true, useRev: true, useBrk: true }];
   const out = [];
   for (const f of [3, 5, 8, 12]) for (const sl of [13, 21, 34, 55]) if (f < sl)
-    for (const a of [0.8, 1.0, 1.5, 2.0]) for (const t1 of [0.8, 1.0, 1.5]) for (const t2 of [2, 3, 5]) for (const flags of sets) for (const tr of [true, false])
-      out.push(Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr }));
+    for (const a of [0.8, 1.0, 1.5, 2.0]) for (const t1 of [0.8, 1.0, 1.5]) for (const t2 of [2, 3, 5]) for (const flags of sets) for (const tr of [true, false]) for (const hf of [false, true])
+      out.push(Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr, useHtf: hf }));
   return out;
 }
-const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend'];
-const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND' };
-function describe(p){ return 'EMA ' + p.emaFastLen + '/' + p.emaSlowLen + ' · SL ' + p.atrMultSL + '×ATR · TP ' + p.rrTp1 + '/' + p.rrTp2 + ' · ' + [p.useEma && 'EMA', p.useRev && 'Dip', p.useBrk && 'Breakout'].filter(Boolean).join('+') + (p.useTrend ? ' · trend' : ''); }
+const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend', 'useHtf'];
+const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND', useHtf: 'USE_HTF' };
+function describe(p){ return 'EMA ' + p.emaFastLen + '/' + p.emaSlowLen + ' · SL ' + p.atrMultSL + '×ATR · TP ' + p.rrTp1 + '/' + p.rrTp2 + ' · ' + [p.useEma && 'EMA', p.useRev && 'Dip', p.useBrk && 'Breakout'].filter(Boolean).join('+') + (p.useTrend ? ' · trend' : '') + (p.useHtf ? ' · grote tf' : ''); }
 const pctStr = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
 
 async function evaluateCoin(token){
@@ -602,8 +627,36 @@ const MAX_TOTAL_LOSS = num('MAX_TOTAL_LOSS_SOL', 0.1);
 let journal = [];          // every closed live trade
 let lossBaseline = 0;      // /hervat after the loss limit starts counting again from here
 const totalPnl = () => journal.reduce((a, t) => a + (Number(t.pnlSol) || 0), 0);
+// learn from REAL trades: a coin that keeps losing for real gets a break, whatever the backtest says
+const LIVE_LEARN_N = Math.max(0, Math.floor(num('LIVE_LEARN_N', 4)));
+const LIVE_PAUSE_H = Math.max(1, num('LIVE_PAUSE_H', 24));
+function liveLearn(mint){
+  if (!LIVE_LEARN_N) return null;
+  const c0 = coin(mint);
+  const mine = journal.slice(c0.livePauseAfter || 0).filter(t => t.mint === mint).slice(-LIVE_LEARN_N);   // after a pause only new trades count
+  if (mine.length < LIVE_LEARN_N) return null;
+  const net = mine.reduce((a, t) => a + t.pnlSol, 0), losses = mine.filter(t => t.pnlSol <= 0).length;
+  if (net < 0 && losses >= Math.ceil(LIVE_LEARN_N * 0.75)){
+    const c = coin(mint);
+    c.livePauseUntil = Date.now() + LIVE_PAUSE_H * 3600000;
+    c.livePauseAfter = journal.length;   // only trades after this pause count for the next decision
+    return { net, losses, n: mine.length };
+  }
+  return null;
+}
+// bet smaller after a losing streak (never bigger than your normal amount)
+const STAKE_ADAPT = flag('STAKE_ADAPT', true);
+function stakeMult(){
+  if (!STAKE_ADAPT) return 1;
+  let streak = 0;
+  for (let k = journal.length - 1; k >= 0 && journal[k].pnlSol <= 0; k--) streak++;
+  return streak >= 2 ? 0.5 : 1;
+}
 live.setJournal(t => {
   journal.push(t);
+  const ll = liveLearn(t.mint);
+  if (ll) notify('📉 ' + (t.symbol || t.mint.slice(0, 6)) + ': de laatste ' + ll.n + ' echte trades kostten samen ' + ll.net.toFixed(4) + ' SOL (' + ll.losses + ' verliezen). Pauze voor nieuwe buys: ' + LIVE_PAUSE_H + ' uur. Verkopen gaan door.');
+  if (STAKE_ADAPT && stakeMult() < 1 && t.pnlSol <= 0) console.log('verliesreeks: volgende inzet tijdelijk de helft');
   if (journal.length > 1000) journal = journal.slice(-1000);
   const run = totalPnl() - lossBaseline;
   if (MAX_TOTAL_LOSS > 0 && run <= -MAX_TOTAL_LOSS && !manualStop){
@@ -616,7 +669,7 @@ function saveState(){
   if (!STATE_FILE) return;
   try {
     const o = { v: 1, savedAt: Date.now(), manualStop, autoTokens, lossBaseline, journal: journal.slice(-500), live: live.exportState(), lastReportDay, coins: {} };
-    coins.forEach((c, t) => { o.coins[t] = { params: c.params, pendingParams: c.pendingParams, paused: c.paused, tunedAt: c.tunedAt }; });
+    coins.forEach((c, t) => { o.coins[t] = { params: c.params, pendingParams: c.pendingParams, paused: c.paused, tunedAt: c.tunedAt, livePauseUntil: c.livePauseUntil || 0, livePauseAfter: c.livePauseAfter || 0 }; });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(o));
     fs.renameSync(STATE_FILE + '.tmp', STATE_FILE);
@@ -629,7 +682,7 @@ function loadState(){
     manualStop = !!o.manualStop; autoTokens = Array.isArray(o.autoTokens) ? o.autoTokens : [];
     lossBaseline = Number(o.lossBaseline) || 0; journal = Array.isArray(o.journal) ? o.journal : [];
     lastReportDay = o.lastReportDay || '';
-    Object.entries(o.coins || {}).forEach(([t, v]) => { const c = coin(t); c.params = v.params || null; c.pendingParams = v.pendingParams || null; c.paused = !!v.paused; c.tunedAt = v.tunedAt || 0; });
+    Object.entries(o.coins || {}).forEach(([t, v]) => { const c = coin(t); c.params = v.params || null; c.pendingParams = v.pendingParams || null; c.paused = !!v.paused; c.tunedAt = v.tunedAt || 0; c.livePauseUntil = Number(v.livePauseUntil) || 0; c.livePauseAfter = Number(v.livePauseAfter) || 0; });
     live.importState(o.live);
     return true;
   } catch (e){ console.error('geheugen laden mislukt', e.message); return false; }
@@ -656,7 +709,7 @@ function statusText(){
   const lines = [];
   lines.push((live.liveEnabled() ? '🟢 Live handelen AAN' : '⚪ Live handelen UIT (alleen signalen)') + (manualStop ? ' · ⏸️ gestopt met /stop (geen nieuwe buys)' : ''));
   const d = live._day || {};
-  if (live.liveEnabled()) lines.push('Vandaag: ' + (d.buys || 0) + ' buys · resultaat ≈ ' + ((d.pnlSol || 0) >= 0 ? '+' : '') + (d.pnlSol || 0).toFixed(4) + ' SOL');
+  if (live.liveEnabled()) lines.push('Vandaag: ' + (d.buys || 0) + ' buys · resultaat ≈ ' + ((d.pnlSol || 0) >= 0 ? '+' : '') + (d.pnlSol || 0).toFixed(4) + ' SOL' + (stakeMult() < 1 ? ' · inzet tijdelijk ×' + stakeMult() + ' (verliesreeks)' : ''));
   if (AUTO_COINS) lines.push('Zelf gekozen coins: ' + (autoTokens.length ? autoTokens.map(t => infoOf(coin(t), t).symbol).join(', ') : 'geen (niets overtuigend)'));
   for (const token of activeTokens()){
     const c = coins.get(token);
@@ -667,6 +720,7 @@ function statusText(){
     if (c.engine) parts.push(c.engine.inPos ? 'strategie: in trade' : 'strategie: wacht');
     if (c.paused) parts.push('⏸️ gepauzeerd (auto-tune)');
     if (exitOnly(token)) parts.push('alleen nog verkopen (coin afgevallen)');
+    if ((c.livePauseUntil || 0) > Date.now()) parts.push('📉 pauze na echte verliezen tot ' + new Date(c.livePauseUntil).toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'numeric' }));
     if (c.params) parts.push('eigen instellingen: ' + describe(paramsFor(c)));
     if (c.pendingParams) parts.push('nieuwe instellingen na sluiten positie');
     lines.push('• ' + tag + ': ' + parts.join(' · '));
@@ -813,4 +867,4 @@ async function start(){
 
 if (require.main === module) start();
 module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
-  pickCoins, activeTokens, saveState, loadState, reportText, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
+  pickCoins, activeTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(), get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
