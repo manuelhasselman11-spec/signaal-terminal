@@ -166,6 +166,9 @@
   #rdTable tbody tr { cursor: pointer; }
   #rdTable tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .sig-fresh { color: var(--buy); font-weight: 700; }
+  .wrap.pick-mode > :not(.topbar):not(#pickView):not(.status-line) { display: none !important; }
+  #pkBody tr td:first-child { width: 28px; }
+  .verdict { font-weight: 700; white-space: nowrap; }
   .main-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   .side { display: flex; flex-direction: column; gap: 16px; }
 
@@ -238,17 +241,49 @@
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">S</div>
-      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 30-09 (radar + optimizer)</small></div>
+      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 02-10 (filters)</small></div>
     </div>
     <div class="search">
       <input id="tokenAddr" value="" spellcheck="false" placeholder="Plak token-adres of link (DexScreener / GMGN / pump.fun)…">
       <button id="loadBtn">Laad</button>
       <button class="ghost icon" id="watchAddBtn" title="Opslaan in watchlist">☆</button>
     </div>
+    <button class="ghost" id="pickNavBtn" title="Welke coins passen bij de bot?">🏆 Coins voor de bot</button>
     <button class="ghost icon" id="themeBtn" title="Licht / donker">◐</button>
   </div>
   <div class="status-line" id="statusLine">Plak een token-adres en klik op Laad.</div>
   <div class="watchlist" id="watchlist"></div>
+
+  <!-- coin choice page -->
+  <div id="pickView" style="display:none;">
+    <div class="card" style="margin-bottom:16px;">
+      <h2>🏆 Welke coins passen bij de bot?</h2>
+      <div class="note" style="margin-bottom:12px;">Per coin: hoe deed <b>jouw strategie</b> (huidige instellingen) het de afgelopen periode, hield dat ook stand in het laatste deel dat de berekening "niet gezien" heeft, wat kost kopen + verkopen echt (Jupiter), en is de coin veilig. Dit zegt iets over hoe goed de coin <i>bij de strategie paste</i> — het voorspelt de toekomst niet.</div>
+      <div class="row" style="align-items:flex-end; margin-bottom:10px;">
+        <label class="checkline"><input type="checkbox" id="pkBig" checked> Grote memes</label>
+        <label class="checkline"><input type="checkbox" id="pkWatch" checked> Mijn watchlist</label>
+        <label class="checkline"><input type="checkbox" id="pkTrend"> Trending nu</label>
+        <div class="field" style="width:110px;"><label>Candles</label>
+          <select id="pkTf"><option value="minute:5">5m</option><option value="minute:15" selected>15m</option><option value="hour:1">1u</option></select></div>
+        <div class="field" style="width:110px;"><label>Periode</label>
+          <select id="pkDays"><option value="3">3 dagen</option><option value="7" selected>1 week</option><option value="14">2 weken</option></select></div>
+        <div class="field" style="width:130px;"><label>Inzet per trade (SOL)</label><input id="pkStake" type="number" value="0.01" min="0.001" step="0.01"></div>
+        <div class="field" style="width:140px;"><label>Min. liquiditeit</label>
+          <select id="pkLiq"><option value="100000">$100K</option><option value="250000" selected>$250K</option><option value="1000000">$1M</option></select></div>
+        <button id="pkRunBtn">🔍 Analyseer</button>
+      </div>
+      <div id="pkStatus" class="note">Klik op Analyseer. Dat duurt 1–3 minuten (gratis GeckoTerminal: ± 10 verzoeken per minuut).</div>
+      <div class="tbl-wrap" style="margin-top:8px;"><table class="bt" id="pkTable" style="display:none;">
+        <thead><tr><th></th><th>Coin</th><th>Oordeel</th><th>Testdeel (laatste 30%)</th><th>Hele periode</th><th>Trades</th><th>PF</th><th>Kosten</th><th>Liq.</th><th>Waarom</th></tr></thead>
+        <tbody id="pkBody"></tbody></table></div>
+      <div id="pkRailway" style="display:none; margin-top:14px;">
+        <h2>Voor Railway (vibrant-possibility → Variables)</h2>
+        <div class="note" style="margin-bottom:6px;">Vink hierboven maximaal ± 3 coins aan. Plak deze waarden in Railway — de bot gebruikt dan precies deze coins en candles.</div>
+        <div class="row" style="gap:8px; align-items:center; margin-bottom:6px;"><code style="min-width:120px;">TOKEN_ADDRESS</code><input id="pkTokens" readonly style="flex:1;"><button class="ghost" id="pkCopy">Kopieer</button></div>
+        <div class="row" style="gap:8px; align-items:center;"><code style="min-width:120px;">TIMEFRAME</code><input id="pkTfOut" readonly style="width:160px;"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- token header -->
   <div class="card token-head" id="tokenHead">
@@ -323,6 +358,7 @@
         </div>
         <div class="legend"><span><i id="lgFast" style="background:var(--ema-fast)"></i>EMA snel</span><span><i style="background:var(--accent)"></i>EMA traag</span></div>
       </div>
+      <div class="note" id="markerNote" style="margin:0 0 6px;"></div>
       <div id="chart"></div>
       <div class="rsi-wrap"><span class="rsi-label">RSI(14)</span><div id="rsiChart"></div></div>
     </div>
@@ -428,11 +464,12 @@
       <label class="sig-toggle"><input type="checkbox" id="useBrk" checked> Breakout<small>nieuwe high op volume</small></label>
     </div>
     <div class="row">
+      <label class="checkline" style="align-self:flex-end; margin-bottom:10px;"><input type="checkbox" id="rawWicks"> Toon ruwe uitschieters</label>
       <div class="field" style="width:170px;"><label>Live prijs (DexScreener)</label>
         <select id="tickRate"><option value="0">Uit</option><option value="1000">Elke 1s</option><option value="2000" selected>Elke 2s</option><option value="5000">Elke 5s</option></select>
       </div>
       <div class="field" style="width:170px;"><label>Candles (GeckoTerminal)</label>
-        <select id="autoRefresh"><option value="0">Uit</option><option value="3000">Elke 3s</option><option value="5000">Elke 5s</option><option value="10000">Elke 10s</option><option value="15000" selected>Elke 15s</option><option value="30000">Elke 30s</option><option value="60000">Elke 60s</option></select>
+        <select id="autoRefresh"><option value="0">Uit</option><option value="10000">Elke 10s</option><option value="15000" selected>Elke 15s</option><option value="30000">Elke 30s</option><option value="60000">Elke 60s</option></select>
       </div>
       <label class="checkline" style="margin-top:18px;"><input type="checkbox" id="confirmCandle" checked> Kaars-bevestiging vereist (EMA-cross)</label>
       <button class="ghost" id="notifBtn" style="margin-top:18px;">🔔 Meldingen aan</button>
@@ -452,6 +489,8 @@
         <div class="field"><label>RSI oversold-niveau</label><input id="rsiOS" type="number" value="32" min="1" max="49"></div>
         <div class="field"><label>Reversal: lookback (candles)</label><input id="rsiLookback" type="number" value="6" min="2"></div>
         <div class="field"><label>Reversal: min. bouncekaars (×ATR)</label><input id="revBody" type="number" value="0.5" min="0" step="0.1"></div>
+        <div class="field"><label><input type="checkbox" id="useTrend" checked> Trendfilter: alleen kopen boven stijgende EMA</label><input id="trendLen" type="number" value="50" min="5" step="1" title="lengte van de trend-EMA"></div>
+        <div class="field"><label>Kostenfilter: TP1 minimaal × kosten (0 = uit)</label><input id="minEdge" type="number" value="2" min="0" step="0.5"></div>
         <div class="field"><label>Sweep: vergelijk N candles terug</label><input id="sweepLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: N-candle high</label><input id="donLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: volume × gemiddelde</label><input id="volMult" type="number" value="1.5" min="0.5" step="0.1"></div>
@@ -693,7 +732,10 @@
     const emaF = computeEMA(C, p.emaFastLen), emaS = computeEMA(C, p.emaSlowLen);
     const atr = computeATR(H, L, C, p.atrLen), rsi = computeRSI(C, p.rsiLen);
     const hasVol = V.some(v => v > 0);
-    const warm = Math.max(p.emaSlowLen, p.atrLen + 1, p.rsiLen + 1, p.donLen + 1, p.sweepLen + 1, 5);
+    // trend filter: only buy above a slow, rising EMA
+    const useTrend = p.useTrend !== false && p.trendLen > 1;
+    const emaT = useTrend ? computeEMA(C, p.trendLen) : null;
+    const warm = Math.max(p.emaSlowLen, p.atrLen + 1, p.rsiLen + 1, p.donLen + 1, p.sweepLen + 1, 5, useTrend ? Math.min(p.trendLen, 40) : 0);
 
     let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1, entryTime = 0;
     let curExits = [];
@@ -770,11 +812,14 @@
           if (C[i] > hi && volOk) tags.push('BRK');
         }
 
-        if (tags.length){
+        const trendOk = !useTrend || (C[i] > emaT[i] && emaT[i] > emaT[i-3]);
+        if (tags.length && trendOk){
           const swingLow = Math.min(L[i], L[i-1], L[i-2]);
           const stopPx = swingLow - atr[i]*p.atrMultSL;
           const risk = C[i] - stopPx;
-          if (risk > 0){
+          // cost filter: the first profit target must be clearly bigger than what the trade costs
+          const edgeOk = !(p.minEdge > 0) || (risk * p.rrTp1 / C[i] * 100) >= p.minEdge * p.costPct;
+          if (risk > 0 && edgeOk){
             inPos = true; entry = C[i]; stop = stopPx; tp1 = entry + risk*p.rrTp1; tp2 = entry + risk*p.rrTp2;
             tp1Hit = false; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i; entryTime = bars[i].time; curExits = [];
             events.push({ time: bars[i].time, type: 'BUY', price: C[i], src });
@@ -822,14 +867,26 @@
   // GeckoTerminal allows ~30 calls per minute. Going over gives 429 errors, and those were the main cause
   // of slow / failing chart loads. This keeps us under the limit and waits briefly on a 429 instead of failing.
   const gtCalls = [];
+  const GT_PER_MIN = 9;   // the free GeckoTerminal API allows about 10 calls per minute
+  let gtWaiting = false;
+  const gtWaitListeners = new Set();   // backtest / radar show "waiting for GeckoTerminal… n s"
+  let heavyJobs = 0;                    // while a backtest/radar runs, the chart refresh pauses so they get the calls
+  function updateGtNote(){
+    const el = document.getElementById('statusLine');
+    if (gtWaiting && el && !/^Live data ophalen mislukt/.test(el.textContent)) el.textContent = 'Even wachten: GeckoTerminal staat gratis ± 10 verzoeken per minuut toe…';
+  }
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   async function gtFetch(url, ms){
     for (;;){
       const now = Date.now();
       while (gtCalls.length && now - gtCalls[0] > 60000) gtCalls.shift();
-      if (gtCalls.length < 27) break;
-      await sleep(60000 - (now - gtCalls[0]) + 50);
+      if (gtCalls.length < GT_PER_MIN) break;
+      gtWaiting = true; updateGtNote();
+      const waitMs = 60000 - (now - gtCalls[0]) + 50;
+      gtWaitListeners.forEach(fn => { try { fn(Math.ceil(waitMs / 1000)); } catch (_){} });
+      await sleep(Math.min(waitMs, 5000));   // re-check every few seconds so the countdown stays current
     }
+    gtWaiting = false;
     const waits = [3000, 7000, 15000];
     for (let attempt = 0; ; attempt++){
       // keep at least ~0.7 s between GeckoTerminal calls; bursts get blocked
@@ -863,8 +920,19 @@
       const data = await res.json();
       const pairs = (data && data.pairs) || [];
       if (!pairs.length) throw new Error('Geen pool gevonden voor dit token-adres.');
-      pairs.sort((a,b) => ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0));
-      const best = pairs[0];
+      const liqOf = x => (x.liquidity && x.liquidity.usd) || 0;
+      const tok = String(tokenAddress).toLowerCase();
+      // pools where this coin is the main (base) token: their price, market cap and name are about THIS coin
+      const asBase = pairs.filter(x => x.baseToken && String(x.baseToken.address).toLowerCase() === tok).sort((a, b) => liqOf(b) - liqOf(a));
+      let best = asBase[0];
+      if (!best){
+        // only pools where this coin is the "money" side (e.g. OTHER/BONK): flip so the numbers are about this coin
+        const q = pairs.filter(x => x.quoteToken && String(x.quoteToken.address).toLowerCase() === tok).sort((a, b) => liqOf(b) - liqOf(a))[0];
+        if (!q) throw new Error('Geen pool gevonden waarin dit token zit.');
+        const pn = Number(q.priceNative), pu = Number(q.priceUsd);
+        best = Object.assign({}, q, { baseToken: q.quoteToken, quoteToken: q.baseToken,
+          priceUsd: pn > 0 && pu > 0 ? String(pu / pn) : null, marketCap: null, fdv: null, priceChange: {}, inverted: true });
+      }
       return { pair: best, poolAddress: best.pairAddress, network: chainMap[best.chainId] || best.chainId };
     });
   }
@@ -930,7 +998,8 @@
   async function fetchOHLCV(network, poolAddress, unit, aggregate, limit, tokenAddress){
     if (unit === 'second') return fetchTradeCandles(network, poolAddress, Number(aggregate) || 1, tokenAddress);
     return withRetry(async () => {
-      const url = 'https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + poolAddress + '/ohlcv/' + unit + '?aggregate=' + aggregate + '&limit=' + (limit || 300);
+      const url = 'https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + poolAddress + '/ohlcv/' + unit + '?aggregate=' + aggregate + '&limit=' + (limit || 300)
+        + (tokenAddress ? '&token=' + encodeURIComponent(tokenAddress) : '');
       const res = await gtFetch(url, 8000);
       if (!res.ok) throw new Error('GeckoTerminal antwoordde met fout ' + res.status);
       const json = await res.json();
@@ -940,9 +1009,9 @@
       return bars;
     });
   }
-  async function fetchATH(network, poolAddress){
+  async function fetchATH(network, poolAddress, tokenAddress){
     // daily candles cover the whole life of most memecoins; the high of any day includes its intraday peaks
-    const bars = await fetchOHLCV(network, poolAddress, 'day', 1, 1000);
+    const bars = await fetchOHLCV(network, poolAddress, 'day', 1, 1000, tokenAddress);
     let best = null, t = null;
     bars.forEach(b => { if (best == null || b.high > best){ best = b.high; t = b.time; } });
     return { price: best, time: t };
@@ -956,6 +1025,8 @@
     bars.sort((a,b) => a.time - b.time);
     return bars;
   }
+  // "take every small gain": small targets, tight stop, fast trailing — compare it honestly with real costs
+  const SCALP = { rrTp1: 0.5, rrTp2: 1.0, atrMultSL: 0.6, trailMult: 1.0, partialFrac: 0.5, useTrend: false, minEdge: 0 };
   function getParams(){
     return {
       emaFastLen: Number($('emaFastLen').value) || 5, emaSlowLen: Number($('emaSlowLen').value) || 13,
@@ -969,7 +1040,9 @@
       partialFrac: Math.min(1, Math.max(0.1, Number($('partialFrac').value) || 0.5)),
       costPct: Number($('costPct').value) || 0, cooldown: Number($('cooldown').value) || 0,
       beAfterTp1: $('beAfterTp1').checked, exitOnCross: $('exitOnCross').checked,
-      useEma: $('useEma').checked, useRev: $('useRev').checked, useBrk: $('useBrk').checked
+      useEma: $('useEma').checked, useRev: $('useRev').checked, useBrk: $('useBrk').checked,
+      useTrend: $('useTrend').checked, trendLen: Number($('trendLen').value) || 50,
+      minEdge: $('minEdge').value === '' ? 2 : Number($('minEdge').value)
     };
   }
 
@@ -1052,6 +1125,26 @@
   let currentBars = [];
   let fitPending = false;
 
+  // A single odd trade (wrong decimals, sandwich bot) can draw a wick many times longer than normal.
+  // For the chart only, such wicks are cut back to 4x the normal candle range around it.
+  function displayBars(bars){
+    const dampen = !$('rawWicks') || !$('rawWicks').checked;
+    return bars.map((b, i) => {
+      const out = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close };
+      if (!dampen) return out;
+      const lo = Math.max(0, i - 10), hi = Math.min(bars.length, i + 11);
+      const ranges = [];
+      for (let k = lo; k < hi; k++) if (k !== i) ranges.push(bars[k].high - bars[k].low);
+      if (ranges.length < 5) return out;
+      ranges.sort((x, y) => x - y);
+      const med = ranges[Math.floor(ranges.length / 2)];
+      if (!(med > 0)) return out;
+      const top = Math.max(b.open, b.close), bot = Math.min(b.open, b.close);
+      if (b.high - top > 4 * med) out.high = top + 4 * med;
+      if (bot - b.low > 4 * med) out.low = Math.max(bot - 4 * med, bot * 0.5);
+      return out;
+    });
+  }
   let btTimer = null, lastBtAt = 0, lastBtLen = -1;
   function render(bars){
     if (!bars.length){ setStatus('Geen candles om te tonen.', 'err'); return; }
@@ -1068,7 +1161,7 @@
 
     const c = chartColors();
     setPriceFormat(lastPrice);
-    candleSeries.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    candleSeries.setData(displayBars(bars));
     // candles from GeckoTerminal lag a little behind the live price: keep showing a fresh ticker price
     if (lastMode === 'live' && lastTick && Date.now() - lastTick.t < 10000) applyTick(lastTick.price);
     fastSeries.setData(res.series.map(s => ({ time: s.time, value: s.emaF })));
@@ -1077,12 +1170,22 @@
     volSeries.setData(hasVol ? bars.map(b => ({ time: b.time, value: b.volume, color: (b.close >= b.open ? c.up : c.down) + '55' })) : []);
     rsiSeries.setData(res.series.filter(s => s.rsi != null).map(s => ({ time: s.time, value: s.rsi })));
 
-    const markers = res.events.map(e => {
+    const formingT = bars[bars.length - 1].time;
+    const barTimes = new Set(bars.map(b => b.time));
+    const markers = res.events.filter(e => barTimes.has(e.time)).map(e => {
+      if (e.type === 'BUY' && e.time === formingT && lastMode === 'live')
+        return { time: e.time, position: 'belowBar', color: '#9aa0a6', shape: 'arrowUp', text: 'BUY? (candle nog open)' };
       if (e.type === 'BUY') return { time: e.time, position: 'belowBar', color: c.up, shape: 'arrowUp', text: 'BUY ' + (e.src || '') };
       if (e.type === 'TP1' || e.type === 'TP2') return { time: e.time, position: 'aboveBar', color: c.up, shape: 'circle', text: e.type };
-      return { time: e.time, position: 'aboveBar', color: c.down, shape: 'square', text: e.type };
-    });
-    candleSeries.setMarkers(markers);
+      return { time: e.time, position: 'aboveBar', color: c.down, shape: 'square', text: e.type === 'TRAIL' ? 'SELL (trail)' : e.type === 'EXIT' ? 'SELL' : e.type };
+    }).sort((a, b) => a.time - b.time);
+    try { candleSeries.setMarkers(markers); } catch (e){ console.warn('markers', e); }
+    const ml = $('markerNote');
+    if (ml){
+      const nB = res.events.filter(e => e.type === 'BUY').length;
+      ml.textContent = nB ? nB + ' BUY-signaal/signalen in deze ' + bars.length + ' candles · ▲ BUY · ● TP · ■ SL/SELL'
+        : 'Geen BUY-signalen in deze ' + bars.length + ' candles' + (bars.length < 80 ? ' (te weinig candles: de indicatoren hebben ± 25 candles opwarmtijd nodig — kies een kortere timeframe)' : ' met je huidige instellingen');
+    }
 
     if (candleSeries._priceLines) candleSeries._priceLines.forEach(l => candleSeries.removePriceLine(l));
     candleSeries._priceLines = [];
@@ -1180,7 +1283,9 @@
       V('Alleen EMA-cross', Object.assign({}, p, { useEma: true, useRev: false, useBrk: false })),
       V('Alleen Reversal (dip)', Object.assign({}, p, { useEma: false, useRev: true, useBrk: false })),
       V('Alleen Breakout', Object.assign({}, p, { useEma: false, useRev: false, useBrk: true })),
-      V('Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true }))
+      V('Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })),
+      V('Zonder trend- en kostenfilter', Object.assign({}, p, { useTrend: false, minEdge: 0 })),
+      V('Scalp (snel winst nemen)', Object.assign({}, p, SCALP))
     ];
     const hours = (bars[bars.length-1].time - bars[0].time) / 3600;
     const few = rows[0].s.n < 20;
@@ -1741,7 +1846,7 @@
       const { pair, poolAddress, network } = pp;
       chart.timeScale().applyOptions({ secondsVisible: unit === 'second' });
       if (unit === 'second'){
-        if (!(Number($('autoRefresh').value) > 0 && Number($('autoRefresh').value) <= 5000)){ prevRefreshValue = $('autoRefresh').value; $('autoRefresh').value = '3000'; }
+        if ($('autoRefresh').value !== '10000'){ if (prevRefreshValue == null) prevRefreshValue = $('autoRefresh').value; $('autoRefresh').value = '10000'; }
       } else if (prevRefreshValue != null){ $('autoRefresh').value = prevRefreshValue; prevRefreshValue = null; }
       const key = poolAddress + '|' + unit + '|' + agg;
       // show the cached chart for this timeframe right away (no trading on it), then fetch fresh data
@@ -1770,7 +1875,7 @@
       // ATH needs a separate call; do it at most once per 10 minutes per pool
       const ac = athCache.get(poolAddress);
       const athP = ac && Date.now() - ac.t < 600000 ? Promise.resolve(ac.res)
-        : fetchATH(network, poolAddress).then(res => { athCache.set(poolAddress, { res, t: Date.now() }); return res; });
+        : fetchATH(network, poolAddress, tokenAddress).then(res => { athCache.set(poolAddress, { res, t: Date.now() }); return res; });
       athP.then(res => {
         if (seq !== loadSeq) return;
         if (res && res.price && (!ath.price || res.price > ath.price)){ ath = res; renderMarket(); }
@@ -1785,6 +1890,8 @@
     if (lastMode !== 'live' || !lastLiveCtx || isRefreshing) return;
     // nothing needs this chart while the tab is hidden and neither bot nor paper trading is on
     if (document.hidden && !$('autoTradeToggle').checked && !$('paperToggle').checked) return;
+    // a backtest or radar scan is fetching: let it use the free GeckoTerminal calls first (unless the bot needs the chart)
+    if (heavyJobs > 0 && !$('autoTradeToggle').checked && !$('paperToggle').checked) return;
     isRefreshing = true;
     try {
       const c = lastLiveCtx;
@@ -1915,6 +2022,8 @@
   }
   function applyTick(px){
     if (!currentBars.length || !candleSeries) return;
+    const refClose = currentBars[currentBars.length - 1].close;
+    if (refClose > 0 && (px / refClose > 1.5 || px / refClose < 0.6)) return;   // probably a different pool's price; wait for the candles
     const secs = tfSeconds();
     const bucket = Math.floor(Date.now() / 1000 / secs) * secs;
     const lastReal = currentBars[currentBars.length - 1];
@@ -1950,17 +2059,18 @@
     tickTimer = ms > 0 ? setInterval(tick, ms) : null;
   }
   $('tickRate').addEventListener('change', setupTicker);
+  $('rawWicks').addEventListener('change', () => { if (currentBars.length) render(currentBars); });
   setupTicker();
 
   // ---------- period backtest with a euro amount ----------
-  async function fetchHistory(network, poolAddress, unit, agg, fromSec, onProgress){
+  async function fetchHistory(network, poolAddress, unit, agg, fromSec, onProgress, tokenAddress){
     // GeckoTerminal returns max 1000 candles per call; page backwards with before_timestamp
     const all = new Map();
     let before = null;
     let partialError = null;
     for (let page = 0; page < 25; page++){
       const url = 'https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + poolAddress + '/ohlcv/' + unit
-        + '?aggregate=' + agg + '&limit=1000' + (before ? '&before_timestamp=' + before : '');
+        + '?aggregate=' + agg + '&limit=1000' + (before ? '&before_timestamp=' + before : '') + (tokenAddress ? '&token=' + encodeURIComponent(tokenAddress) : '');
       if (page > 0) await sleep(1500);   // spread the pages out, GeckoTerminal blocks bursts
       let json;
       try {
@@ -1986,7 +2096,15 @@
     out.partialError = partialError;
     return out;
   }
+  const historyCache = new Map();   // pool|tf -> { bars, t, from }
+  let solEurCache = null;
   async function fetchSolEur(){
+    if (solEurCache && Date.now() - solEurCache.t < 600000) return solEurCache.v;
+    const v = await fetchSolEurRaw();
+    if (v) solEurCache = { v, t: Date.now() };
+    return v;
+  }
+  async function fetchSolEurRaw(){
     try {
       const res = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=eur', undefined, 7000);
       const j = await res.json();
@@ -2012,9 +2130,25 @@
     }
     $('wkRunBtn').disabled = true;
     el.innerHTML = 'Candles ophalen…';
+    const onWait = sec => { el.textContent = 'Wachten op GeckoTerminal (gratis ± 10 verzoeken per minuut)… nog ± ' + sec + ' s'; };
+    gtWaitListeners.add(onWait); heavyJobs++;
     try {
+      const key = c.poolAddress + '|' + unit + '|' + agg;
+      const cached = historyCache.get(key);
+      const fromSec = start - warm * secs;
+      // 1. the chart already has every candle we need (young coin, or same timeframe) → no download at all
+      // 2. we downloaded this period less than 5 minutes ago → reuse
+      const haveChart = currentTf === unit + ':' + agg && currentBars.length && currentBars[0].time <= fromSec + secs
+        || (currentTf === unit + ':' + agg && currentBars.length && pairInfo && pairInfo.pairCreatedAt && currentBars[0].time <= pairInfo.pairCreatedAt / 1000 + secs * 2);
+      const loadBars = haveChart ? Promise.resolve(currentBars.slice())
+        : (cached && Date.now() - cached.t < 300000 && cached.from <= fromSec) ? Promise.resolve(cached.bars)
+        : Promise.race([
+            fetchHistory(c.network, c.poolAddress, unit, agg, fromSec, n => { el.textContent = 'Candles ophalen… ' + n.toLocaleString('nl-NL') + ' van ± ' + needed.toLocaleString('nl-NL'); }, c.tokenAddress)
+              .then(b => { if (!b.partialError) historyCache.set(key, { bars: b, t: Date.now(), from: fromSec }); return b; }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('ophalen duurde langer dan 3 minuten')), 180000))
+          ]);
       const [bars, solEur] = await Promise.all([
-        fetchHistory(c.network, c.poolAddress, unit, agg, start - warm * secs, n => { el.textContent = 'Candles ophalen… ' + n.toLocaleString('nl-NL') + ' van ± ' + needed.toLocaleString('nl-NL'); }),
+        loadBars,
         fetchSolEur()
       ]);
       if (bars.length < 60) throw new Error('te weinig candles gevonden (' + bars.length + ')');
@@ -2060,7 +2194,9 @@
         ['Alleen EMA-cross', Object.assign({}, p, { useEma: true, useRev: false, useBrk: false })],
         ['Alleen Reversal (dip)', Object.assign({}, p, { useEma: false, useRev: true, useBrk: false })],
         ['Alleen Breakout', Object.assign({}, p, { useEma: false, useRev: false, useBrk: true })],
-        ['Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })]
+        ['Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })],
+        ['Zonder trend- en kostenfilter', Object.assign({}, p, { useTrend: false, minEdge: 0 })],
+        ['Scalp (snel winst nemen)', Object.assign({}, p, SCALP)]
       ];
       const periodBars = bars.filter(b => b.time >= firstIn.time);
       const vrows = variants.map(([name, pp], idx) => {
@@ -2085,7 +2221,7 @@
       el.innerHTML = html;
     } catch (err){
       el.innerHTML = '<span class="down">Backtest mislukt: ' + esc(err.message) + '.</span> Wacht een minuut en probeer het opnieuw. Blijft het misgaan, zet dan je adblocker/Brave Shields uit voor deze pagina of kies grotere candles.';
-    } finally { $('wkRunBtn').disabled = false; }
+    } finally { $('wkRunBtn').disabled = false; gtWaitListeners.delete(onWait); heavyJobs = Math.max(0, heavyJobs - 1); }
   }
   $('wkRunBtn').addEventListener('click', () => { runPeriodBacktest(); });
 
@@ -2093,9 +2229,9 @@
   const SET_KEY = 'signaalTerminal.settings.v1';
   const SETTING_IDS = ['emaFastLen','emaSlowLen','atrLen','atrMultSL','rrTp1','rrTp2','confirmCandle','confirmWindow',
     'rsiLen','rsiOS','rsiLookback','revBody','sweepLen','donLen','volMult','trailMult','partialFrac',
-    'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk',
+    'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge',
     'paperBuyPct','maxSolPerBuy','slippageBps','maxRoundTrip','wkEur','wkDays','wkStake','wkTf',
-    'rdSource','rdMcap','rdLiq','rdTf','tickRate'];
+    'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq'];
   function saveSettings(){
     const o = {};
     SETTING_IDS.forEach(id => { const el = $(id); if (el) o[id] = el.type === 'checkbox' ? el.checked : el.value; });
@@ -2153,8 +2289,8 @@
     ];
     const combos = [];
     [3, 5, 8, 12].forEach(f => [13, 21, 34, 55].forEach(sl => { if (f < sl)
-      [0.8, 1.0, 1.5, 2.0].forEach(a => [0.8, 1.0, 1.5].forEach(t1 => [2, 3, 5].forEach(t2 => sets.forEach(([nm, flags]) =>
-        combos.push({ nm, p: Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2 }) })))));
+      [0.8, 1.0, 1.5, 2.0].forEach(a => [0.8, 1.0, 1.5].forEach(t1 => [2, 3, 5].forEach(t2 => sets.forEach(([nm, flags]) => [true, false].forEach(tr =>
+        combos.push({ nm: nm + (tr ? ' · trend' : ''), p: Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr }) }))))));
     }));
     const score = trades => {
       let e = 1, peak = 1, dd = 0; trades.forEach(t => { e *= 1 + stake * t.ret; peak = Math.max(peak, e); dd = Math.min(dd, e / peak - 1); });
@@ -2200,7 +2336,7 @@
     el.querySelectorAll('[data-opt]').forEach(btn => btn.addEventListener('click', () => {
       const r = top[Number(btn.dataset.opt)]; if (!r) return;
       ['emaFastLen','emaSlowLen','atrMultSL','rrTp1','rrTp2'].forEach(k => { $(k).value = r.p[k]; });
-      ['useEma','useRev','useBrk'].forEach(k => { $(k).checked = r.p[k]; });
+      ['useEma','useRev','useBrk','useTrend'].forEach(k => { $(k).checked = r.p[k]; });
       saveSettings(); renderCurrentParamsOnly();
       btn.textContent = 'Toegepast ✓';
     }));
@@ -2291,6 +2427,8 @@
     const st = $('rdStatus');
     st.textContent = 'Coins zoeken…'; st.className = 'note';
     $('rdScanBtn').disabled = true;
+    const onWait = sec => { st.textContent = 'Wachten op GeckoTerminal (gratis ± 10 verzoeken per minuut)… nog ± ' + sec + ' s'; };
+    gtWaitListeners.add(onWait); heavyJobs++;
     try {
       let items = await radarCandidates(src);
       if (seq !== rdSeq) return;
@@ -2331,7 +2469,7 @@
       });
     } catch (e){
       if (seq === rdSeq){ st.textContent = 'Scan mislukt: ' + e.message; st.className = 'note down'; }
-    } finally { if (seq === rdSeq) $('rdScanBtn').disabled = false; }
+    } finally { if (seq === rdSeq) $('rdScanBtn').disabled = false; gtWaitListeners.delete(onWait); heavyJobs = Math.max(0, heavyJobs - 1); }
   }
   function setupRadarAuto(){
     if (rdTimer) clearInterval(rdTimer);
@@ -2351,6 +2489,139 @@
     loadLive();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
+
+  // ---------- coin choice page ----------
+  function setPickMode(on){
+    document.querySelector('.wrap').classList.toggle('pick-mode', on);
+    $('pickView').style.display = on ? '' : 'none';
+    $('pickNavBtn').textContent = on ? '📈 Terug naar terminal' : '🏆 Coins voor de bot';
+    if (on && location.hash !== '#coins') history.replaceState(null, '', '#coins');
+    if (!on && location.hash === '#coins') history.replaceState(null, '', location.pathname + location.search);
+    if (!on && chart) setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+  }
+  $('pickNavBtn').addEventListener('click', () => setPickMode($('pickView').style.display === 'none'));
+  if (location.hash === '#coins') setPickMode(true);
+
+  let pkRows = [], pkSeq = 0;
+  function pkRender(){
+    const tb = $('pkBody'); $('pkTable').style.display = pkRows.length ? '' : 'none';
+    const rank = r => r.verdict === 'good' ? 3 : r.verdict === 'maybe' ? 2 : r.verdict === 'bad' ? 1 : 0;
+    const rows = [...pkRows].sort((a, b) => rank(b) - rank(a) || (b.testE || 0) - (a.testE || 0));
+    tb.innerHTML = rows.map(r => {
+      const v = r.verdict === 'good' ? '<span class="verdict up">✅ Kandidaat</span>' : r.verdict === 'maybe' ? '<span class="verdict" style="color:var(--accent)">🟡 Twijfel</span>'
+        : r.verdict === 'bad' ? '<span class="verdict down">❌ Niet</span>' : '<span class="note">bezig…</span>';
+      const f = e => e == null ? '' : '<span class="' + (e >= 1 ? 'up' : 'down') + '">' + pct(e - 1) + '</span>';
+      return '<tr><td><input type="checkbox" class="pk-sel" data-addr="' + esc(r.token) + '"' + (r.sel ? ' checked' : '') + (r.verdict ? '' : ' disabled') + '></td>'
+        + '<td><b>' + esc(r.sym || '?') + '</b><div class="note" style="margin:0;">' + (r.mcap ? 'MCap ' + fmtUsd(r.mcap) : '') + '</div></td>'
+        + '<td>' + v + '</td><td>' + f(r.testE) + (r.testN != null ? ' <span class="note">(' + r.testN + ' trades)</span>' : '') + (r.bhTest != null ? '<div class="note" style="margin:0;">vasthouden ' + pct(r.bhTest) + '</div>' : '') + '</td>'
+        + '<td>' + f(r.fullE) + '</td><td>' + (r.n != null ? r.n : '') + '</td><td>' + (r.pf != null ? (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') : '') + '</td>'
+        + '<td>' + (r.cost != null ? r.cost.toFixed(1) + '%' : '') + '</td><td>' + (r.liq ? fmtUsd(r.liq) : '') + '</td>'
+        + '<td class="note" style="margin:0; max-width:320px;">' + esc(r.why || '') + '</td></tr>';
+    }).join('');
+    tb.querySelectorAll('.pk-sel').forEach(cb => cb.addEventListener('change', () => {
+      const r = pkRows.find(x => x.token === cb.dataset.addr); if (r) r.sel = cb.checked; pkRailway();
+    }));
+    pkRailway();
+  }
+  function pkRailway(){
+    const sel = pkRows.filter(r => r.sel);
+    $('pkRailway').style.display = pkRows.some(r => r.verdict) ? '' : 'none';
+    $('pkTokens').value = sel.map(r => r.token).join(',');
+    $('pkTfOut').value = $('pkTf').value;
+  }
+  $('pkCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('pkTokens').value); $('pkCopy').textContent = 'Gekopieerd ✓'; }
+    catch (_){ $('pkTokens').select(); $('pkCopy').textContent = 'Selecteer + Ctrl+C'; }
+    setTimeout(() => { $('pkCopy').textContent = 'Kopieer'; }, 2500);
+  });
+
+  async function pkAnalyze(){
+    const seq = ++pkSeq;
+    const st = $('pkStatus');
+    const [unit, agg] = $('pkTf').value.split(':');
+    const days = Number($('pkDays').value) || 7;
+    const stakeSol = Math.max(0.001, Number($('pkStake').value) || 0.01);
+    const minLiq = Number($('pkLiq').value) || 250000;
+    const secs = (unit === 'hour' ? 3600 : 60) * Number(agg);
+    $('pkRunBtn').disabled = true; heavyJobs++;
+    const onWait = sec => { st.textContent = 'Wachten op GeckoTerminal (gratis ± 10 verzoeken per minuut)… nog ± ' + sec + ' s'; };
+    gtWaitListeners.add(onWait);
+    try {
+      st.textContent = 'Coins verzamelen…';
+      let items = [];
+      const add = list => list.forEach(x => { if (x && x.token && !items.some(y => y.token === x.token)) items.push(x); });
+      if ($('pkWatch').checked && watchlist.length) add(await radarCandidates('watch').catch(() => []));
+      if ($('pkBig').checked) add(await radarCandidates('big').catch(() => []));
+      if ($('pkTrend').checked) add(await radarCandidates('trending').catch(() => []));
+      if (seq !== pkSeq) return;
+      if (!items.length) throw new Error('geen coins gevonden — vink een bron aan of sla coins op in je watchlist');
+      items = items.slice(0, 24);
+      pkRows = items.map(x => Object.assign({}, x));
+      pkRender();
+      const base = getParams();
+      const lamports = Math.floor(stakeSol * 1e9);
+      const now = Math.floor(Date.now() / 1000), start = now - days * 86400;
+      const warm = Math.max(base.emaSlowLen || 13, 40) * 3;
+      let i = 0;
+      for (const r of pkRows){
+        if (seq !== pkSeq) return;
+        i++;
+        st.textContent = 'Analyseren: ' + r.sym + ' (' + i + ' / ' + pkRows.length + ')…';
+        const why = [];
+        try {
+          if (r.liq < minLiq) why.push('liquiditeit ' + fmtUsd(r.liq) + ' < ' + fmtUsd(minLiq));
+          // real cost of buying + selling right away at this size
+          try {
+            const q1 = await jupiterQuote(SOL_MINT, r.token, lamports, 300);
+            const q2 = await jupiterQuote(r.token, SOL_MINT, q1.outAmount, 300);
+            r.cost = Math.max(0.3, (1 - Number(q2.outAmount) / lamports) * 100 + 0.2);
+          } catch (_){ r.cost = null; why.push('geen koop/verkoop-route via Jupiter'); }
+          if (r.cost != null && r.cost > 3) why.push('kopen + verkopen kost ' + r.cost.toFixed(1) + '%');
+          // safety (mint / freeze authority)
+          try { const pr = await checkMint(r.token); if (pr.length) why.push(pr.join(' · ')); }
+          catch (_){ r.safetyUnknown = true; }
+          // the strategy on the period, with this coin's real cost
+          const key = r.pool + '|' + unit + '|' + agg;
+          const cached = historyCache.get(key);
+          const bars = cached && Date.now() - cached.t < 300000 && cached.from <= start - warm * secs ? cached.bars
+            : await fetchHistory('solana', r.pool, unit, agg, start - warm * secs, null, r.token);
+          if (!bars.partialError) historyCache.set(key, { bars, t: Date.now(), from: start - warm * secs });
+          const inPeriod = bars.filter(b => b.time >= start);
+          if (inPeriod.length < 60) throw new Error('te weinig candles (' + inPeriod.length + ') — coin te jong voor deze periode');
+          const p = Object.assign({}, base, { costPct: r.cost != null ? Math.round(r.cost * 10) / 10 : base.costPct });
+          const trades = runEngine(bars, p).trades.filter(t => t.entryTime >= start);
+          const split = inPeriod[Math.floor(inPeriod.length * 0.7)].time;
+          const grow = list => list.reduce((e, t) => e * (1 + t.ret), 1);
+          const test = trades.filter(t => t.entryTime >= split);
+          const s = computeStats(trades, inPeriod);
+          r.n = trades.length; r.pf = s.n ? s.pf : null; r.fullE = grow(trades); r.testE = grow(test); r.testN = test.length;
+          const a = inPeriod.find(b => b.time >= split), z = inPeriod[inPeriod.length - 1];
+          r.bhTest = a ? z.close / a.close - 1 : null;
+          if (r.n < 5) why.push('maar ' + r.n + ' trades in de periode');
+          if (r.fullE < 1) why.push('strategie verloor over de hele periode');
+          if (test.length && r.testE < 1) why.push('verloor in het testdeel');
+          if (!test.length) why.push('geen trades in het testdeel');
+          const hardBad = r.liq < minLiq || r.cost == null || r.cost > 3 || why.some(w => /authority|route|verloor in het testdeel|verloor over/.test(w));
+          const good = !hardBad && !why.length && r.testE > 1 && r.n >= 8 && r.pf >= 1.2 && !r.safetyUnknown;
+          r.verdict = good ? 'good' : hardBad ? 'bad' : 'maybe';
+          if (r.safetyUnknown) why.push('veiligheid niet gecontroleerd (RPC)');
+          if (good) why.push('winst in leer- én testdeel, genoeg trades, betaalbare kosten');
+          else if (!why.length) why.push('net niet overtuigend (PF ' + (r.pf != null && isFinite(r.pf) ? r.pf.toFixed(2) : '–') + ', ' + r.n + ' trades)');
+          r.sel = good && pkRows.filter(x => x.sel).length < 3;
+        } catch (e){ r.verdict = 'bad'; why.push(e.message); }
+        r.why = why.join(' · ');
+        pkRender();
+      }
+      const nGood = pkRows.filter(r => r.verdict === 'good').length;
+      st.textContent = 'Klaar · ' + pkRows.length + ' coins · ' + nGood + ' kandidaat/kandidaten · ' + new Date().toLocaleTimeString('nl-NL')
+        + (nGood ? '' : ' · Geen enkele coin is overtuigend met deze instellingen. Dan is "nu niet handelen" ook een uitkomst — of probeer andere candles/instellingen.');
+      st.className = 'note ' + (nGood ? 'up' : '');
+    } catch (e){
+      if (seq === pkSeq){ st.textContent = 'Analyse mislukt: ' + e.message; st.className = 'note down'; }
+    } finally { if (seq === pkSeq) $('pkRunBtn').disabled = false; heavyJobs = Math.max(0, heavyJobs - 1); gtWaitListeners.delete(onWait); }
+  }
+  $('pkRunBtn').addEventListener('click', () => { pkAnalyze(); });
+  $('pkTf').addEventListener('change', pkRailway);
 
   // ---------- events ----------
   $('loadBtn').addEventListener('click', loadLive);
