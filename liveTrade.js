@@ -146,6 +146,7 @@ async function getState(mint){
     // after a restart: look at the wallet, so the bot never buys twice or forgets a position
     const raw = await tokenRawBalance(loadKeypair(), mint);
     s.open = raw > 0n; s.initDone = true;
+    if (!s.open){ s.tp1Done = false; s.spentSol = 0; s.receivedSol = 0; }
     if (s.open) console.log('LIVE', mint.slice(0, 6), 'wallet heeft al tokens → behandeld als open positie');
   }
   return s;
@@ -154,6 +155,19 @@ function isOpen(mint){ const s = state.get(mint); return !!(s && s.open); }
 async function positionOpen(mint){ return (await getState(mint)).open; }
 
 let notifyFn = async msg => console.log(msg);
+let journalFn = () => {};
+function setJournal(fn){ journalFn = fn; }
+// save / restore what the bot knows (positions are always re-checked against the wallet after a restart)
+function exportState(){
+  const pos = {};
+  state.forEach((v, k) => { pos[k] = { open: v.open, tp1Done: v.tp1Done, spentSol: v.spentSol, receivedSol: v.receivedSol || 0 }; });
+  return { pos, day: { key: day.key, buys: day.buys, pnlSol: day.pnlSol } };
+}
+function importState(o){
+  if (!o) return;
+  Object.entries(o.pos || {}).forEach(([k, v]) => state.set(k, { open: !!v.open, tp1Done: !!v.tp1Done, spentSol: Number(v.spentSol) || 0, receivedSol: Number(v.receivedSol) || 0, busy: false, initDone: false }));
+  if (o.day && o.day.key === today()){ day.key = o.day.key; day.buys = Number(o.day.buys) || 0; day.pnlSol = Number(o.day.pnlSol) || 0; }
+}
 function setNotify(fn){ notifyFn = fn; }
 async function say(msg){ try { await notifyFn(msg); } catch (_){ console.log(msg); } }
 
@@ -192,6 +206,7 @@ async function doSell(mint, s, label, frac, info){
   if (frac >= 1){
     const pnl = gotSol + (s.receivedSol || 0) - s.spentSol;
     dayStats().pnlSol += pnl;
+    try { journalFn({ mint, symbol: (info && info.symbol) || mint.slice(0, 6), spentSol: s.spentSol, gotSol: gotSol + (s.receivedSol || 0), pnlSol: pnl, exit: label, time: Date.now(), sig }); } catch (_){}
     s.open = false; s.tp1Done = false; s.receivedSol = 0;
     await say('💰 LIVE ' + label + ' alles verkocht · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ≈ ' + (pnl >= 0 ? '+' : '') + pnl.toFixed(4) + ' SOL · https://solscan.io/tx/' + sig);
   } else {
@@ -236,4 +251,4 @@ async function startupReport(){
     + ' buys/dag · max dagverlies ' + env('MAX_DAILY_LOSS_SOL', 0.05) + ' SOL';
 }
 
-module.exports = { liveEnabled, handleLiveEvents, loadKeypair, isOpen, positionOpen, setNotify, startupReport, _state: state, _day: day };
+module.exports = { liveEnabled, handleLiveEvents, loadKeypair, isOpen, positionOpen, setNotify, setJournal, exportState, importState, startupReport, _state: state, _day: day };
