@@ -167,6 +167,8 @@
   #rdTable tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .sig-fresh { color: var(--buy); font-weight: 700; }
   .wrap.pick-mode > :not(.topbar):not(#pickView):not(.status-line) { display: none !important; }
+  .wrap.pred-mode > :not(.topbar):not(#predView):not(.status-line) { display: none !important; }
+  #pdBody tr { cursor: pointer; }
   #pkBody tr td:first-child { width: 28px; }
   .verdict { font-weight: 700; white-space: nowrap; }
   .main-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
@@ -241,18 +243,46 @@
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">S</div>
-      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 04-10 (slimmer)</small></div>
+      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 04-10 (kansen)</small></div>
     </div>
     <div class="search">
       <input id="tokenAddr" value="" spellcheck="false" placeholder="Plak token-adres of link (DexScreener / GMGN / pump.fun)…">
       <button id="loadBtn">Laad</button>
       <button class="ghost icon" id="watchAddBtn" title="Opslaan in watchlist">☆</button>
     </div>
+    <button class="ghost" id="predNavBtn" title="Welke coins hebben nu de beste papieren — en leert van de uitkomst">🔮 Kansen</button>
     <button class="ghost" id="pickNavBtn" title="Welke coins passen bij de bot?">🏆 Coins voor de bot</button>
     <button class="ghost icon" id="themeBtn" title="Licht / donker">◐</button>
   </div>
   <div class="status-line" id="statusLine">Plak een token-adres en klik op Laad.</div>
   <div class="watchlist" id="watchlist"></div>
+
+  <!-- chances page: score now, check later, learn -->
+  <div id="predView" style="display:none;">
+    <div class="card" style="margin-bottom:16px;">
+      <h2>🔮 Kansen — welke coins hebben nu de beste papieren?</h2>
+      <div class="note" style="margin-bottom:12px;">Elke coin krijgt een score uit momentum, plotseling meer volume, meer kopers dan verkopers, liquiditeit en leeftijd. Na <b id="pdHorizonTxt">1 uur</b> kijkt de pagina wat de koers <b>echt</b> deed (na kosten) en past hij zijn weging aan. Hieronder zie je eerlijk of zijn hoogste scores het ook echt beter deden dan de rest — pas na ± 100 uitkomsten zegt dat iets. Geen voorspelling of advies: alleen wat de data liet zien.</div>
+      <div class="row" style="align-items:flex-end; margin-bottom:10px;">
+        <label class="checkline"><input type="checkbox" id="pdTrend" checked> Trending</label>
+        <label class="checkline"><input type="checkbox" id="pdNew"> Nieuwe pools</label>
+        <label class="checkline"><input type="checkbox" id="pdBig" checked> Grote memes</label>
+        <label class="checkline"><input type="checkbox" id="pdWatch" checked> Watchlist</label>
+        <div class="field" style="width:140px;"><label>Min. liquiditeit</label>
+          <select id="pdLiq"><option value="20000">$20K</option><option value="50000" selected>$50K</option><option value="250000">$250K</option><option value="1000000">$1M</option></select></div>
+        <div class="field" style="width:130px;"><label>Controle na</label>
+          <select id="pdHorizon"><option value="1800000">30 min</option><option value="3600000" selected>1 uur</option><option value="14400000">4 uur</option></select></div>
+        <div class="field" style="width:150px;"><label>Automatisch scannen</label>
+          <select id="pdAuto"><option value="0">Handmatig</option><option value="600000" selected>Elke 10 min</option><option value="1800000">Elke 30 min</option></select></div>
+        <button id="pdScanBtn">🔮 Scan nu</button>
+      </div>
+      <div id="pdStatus" class="note">Klik op Scan nu. De pagina leert alleen zolang hij openstaat (in deze browser).</div>
+      <div id="pdStats" class="note" style="margin-top:8px;"></div>
+      <div class="tbl-wrap" style="margin-top:8px;"><table class="bt" id="pdTable" style="display:none;">
+        <thead><tr><th>Coin</th><th>Kans</th><th>Waarom</th><th>5m</th><th>1u</th><th>24u</th><th>Volume 1u</th><th>Kopers 1u</th><th>Liq.</th></tr></thead>
+        <tbody id="pdBody"></tbody></table></div>
+      <div class="row" style="margin-top:10px;"><button class="ghost" id="pdReset">Leergeheugen wissen</button></div>
+    </div>
+  </div>
 
   <!-- coin choice page -->
   <div id="pickView" style="display:none;">
@@ -2249,7 +2279,7 @@
     'rsiLen','rsiOS','rsiLookback','revBody','sweepLen','donLen','volMult','trailMult','partialFrac',
     'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge','useHtf','htfMult',
     'paperBuyPct','maxSolPerBuy','slippageBps','maxRoundTrip','wkEur','wkDays','wkStake','wkTf',
-    'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq'];
+    'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq','pdTrend','pdNew','pdBig','pdWatch','pdLiq','pdHorizon','pdAuto'];
   function saveSettings(){
     const o = {};
     SETTING_IDS.forEach(id => { const el = $(id); if (el) o[id] = el.type === 'checkbox' ? el.checked : el.value; });
@@ -2510,6 +2540,7 @@
 
   // ---------- coin choice page ----------
   function setPickMode(on){
+    if (on && typeof setPredMode === 'function' && $('predView').style.display !== 'none') setPredMode(false);
     document.querySelector('.wrap').classList.toggle('pick-mode', on);
     $('pickView').style.display = on ? '' : 'none';
     $('pickNavBtn').textContent = on ? '📈 Terug naar terminal' : '🏆 Coins voor de bot';
@@ -2640,6 +2671,178 @@
   }
   $('pkRunBtn').addEventListener('click', () => { pkAnalyze(); });
   $('pkTf').addEventListener('change', pkRailway);
+
+  // ---------- chances page: score → wait → check → learn ----------
+  const PD_KEY = 'signaalTerminal.kansen.v1';
+  // features: momentum 1u, momentum 5m, volume-acceleration, buyers 1u, buyers 5m, liquidity, age, overheated 24u
+  const PD_NAMES = ['stijgt dit uur', 'stijgt nu (5m)', 'volume trekt aan', 'meer kopers (1u)', 'meer kopers (5m)', 'veel liquiditeit', 'oudere coin', 'al ver gestegen (24u)'];
+  const PD_PRIOR = [0.6, 0.3, 0.5, 0.6, 0.3, 0.2, 0.1, -0.5];
+  let pd = null, pdTimer = null, pdBusy = false, pdRows = [];
+  function pdLoad(){
+    try { pd = JSON.parse(localStorage.getItem(PD_KEY) || 'null'); } catch (_){ pd = null; }
+    if (!pd || !Array.isArray(pd.w) || pd.w.length !== PD_PRIOR.length) pd = { w: PD_PRIOR.slice(), b: -0.3, pending: [], done: [] };
+  }
+  function pdSave(){ try { localStorage.setItem(PD_KEY, JSON.stringify(pd)); } catch (_){} }
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  const sigm = z => 1 / (1 + Math.exp(-z));
+  function pdFeatures(pr){
+    const pc = pr.priceChange || {}, vol = pr.volume || {}, tx = pr.txns || {};
+    const ratio = (o) => { const b = Number(o && o.buys) || 0, s2 = Number(o && o.sells) || 0; return b + s2 > 0 ? b / (b + s2) - 0.5 : 0; };
+    const v1 = Number(vol.h1) || 0, v6 = Number(vol.h6) || 0;
+    const accel = v6 > 0 ? Math.log((v1 + 1) / (v6 / 6 + 1)) : 0;
+    const liq = (pr.liquidity && Number(pr.liquidity.usd)) || 0;
+    const ageH = pr.pairCreatedAt ? (Date.now() - pr.pairCreatedAt) / 3600000 : 24 * 30;
+    return [
+      clamp((Number(pc.h1) || 0) / 30, -2, 2), clamp((Number(pc.m5) || 0) / 10, -2, 2), clamp(accel, -2, 2),
+      clamp(ratio(tx.h1) * 4, -2, 2), clamp(ratio(tx.m5) * 4, -2, 2),
+      clamp((Math.log10(liq + 1) - 5) / 1.5, -2, 2), clamp((Math.log10(ageH + 1) - 1.5), -2, 2), clamp((Number(pc.h24) || 0) / 100, -2, 3)
+    ];
+  }
+  const pdScore = x => sigm(pd.b + x.reduce((a, v, i) => a + v * pd.w[i], 0));
+  function pdWhy(x){
+    return x.map((v, i) => ({ i, c: v * pd.w[i] })).filter(o => Math.abs(o.c) > 0.15).sort((a, b) => Math.abs(b.c) - Math.abs(a.c)).slice(0, 3)
+      .map(o => (o.c > 0 ? '＋ ' : '－ ') + PD_NAMES[o.i]).join(' · ');
+  }
+  // check old predictions: did the price beat costs after the waiting time? → learn from it
+  async function pdResolve(){
+    const now = Date.now();
+    const due = pd.pending.filter(q => now - q.t >= q.h);
+    if (!due.length) return 0;
+    const cost = (Number($('costPct').value) || 1) / 100;
+    let learned = 0;
+    for (let k = 0; k < due.length; k += 30){
+      const part = due.slice(k, k + 30);
+      let data;
+      try { const res = await fetchWithTimeout('https://api.dexscreener.com/latest/dex/tokens/' + part.map(q => q.token).join(','), undefined, 9000); data = await res.json(); }
+      catch (_){ return learned; }
+      const priceOf = {};
+      ((data && data.pairs) || []).forEach(pr => { if (pr.pairAddress && pr.priceUsd) priceOf[pr.pairAddress] = Number(pr.priceUsd); });
+      part.forEach(q => {
+        const p2 = priceOf[q.pool];
+        if (!(p2 > 0)){ if (now - q.t > q.h * 3) q.drop = true; return; }   // pool gone for too long: likely rugged → counts as a loss
+        const ret = p2 / q.price - 1;
+        q.ret = ret; q.y = ret > cost ? 1 : 0;
+      });
+      part.filter(q => q.drop).forEach(q => { q.ret = -1; q.y = 0; });
+      part.filter(q => q.y != null).forEach(q => {
+        const pz = pdScore(q.x), lr = 0.05;
+        for (let i = 0; i < pd.w.length; i++) pd.w[i] -= lr * ((pz - q.y) * q.x[i] + 0.001 * pd.w[i]);
+        pd.b -= lr * (pz - q.y);
+        pd.done.push({ t: q.t, s: q.s, ret: q.ret, y: q.y, sym: q.sym });
+        learned++;
+      });
+    }
+    const doneSet = new Set(due.filter(q => q.y != null).map(q => q.token + q.t));
+    pd.pending = pd.pending.filter(q => !doneSet.has(q.token + q.t));
+    if (pd.done.length > 3000) pd.done = pd.done.slice(-3000);
+    pdSave();
+    return learned;
+  }
+  function pdStatsHtml(){
+    const d = pd.done;
+    if (!d.length) return 'Nog geen uitkomsten: na de eerste controletijd verschijnt hier hoe goed de scores waren.';
+    // per scan: compare the 5 highest scores with all coins of that scan
+    const scans = {}; d.forEach(r => { (scans[r.t] = scans[r.t] || []).push(r); });
+    let topR = 0, topN = 0, allR = 0, allN = 0, topHit = 0;
+    Object.values(scans).forEach(list => {
+      list.sort((a, b) => b.s - a.s);
+      list.slice(0, 5).forEach(r => { topR += r.ret; topN++; if (r.y) topHit++; });
+      list.forEach(r => { allR += r.ret; allN++; });
+    });
+    const base = d.filter(r => r.y).length / d.length;
+    const avgTop = topR / Math.max(1, topN), avgAll = allR / Math.max(1, allN);
+    const verdict = d.length < 100 ? '⏳ nog te weinig uitkomsten om conclusies te trekken'
+      : avgTop > avgAll + 0.005 && topHit / topN > base + 0.03 ? '✅ de hoogste scores deden het tot nu toe beter dan gemiddeld'
+      : '⚠️ de hoogste scores doen het (nog) niet beter dan willekeurig kiezen — vertrouw er niet op';
+    return '<b>Leerresultaat (' + d.length + ' uitkomsten):</b> top-5 per scan gem. <span class="' + (avgTop >= 0 ? 'up' : 'down') + '">' + pct(avgTop) + '</span> · alle coins gem. <span class="' + (avgAll >= 0 ? 'up' : 'down') + '">' + pct(avgAll) + '</span>'
+      + ' · top-5 raak (winst na kosten) ' + Math.round(topHit / Math.max(1, topN) * 100) + '% vs basis ' + Math.round(base * 100) + '% · ' + verdict
+      + '<br>Wat hij geleerd heeft: ' + PD_NAMES.map((n, i) => n + ' ' + (pd.w[i] >= 0 ? '+' : '') + pd.w[i].toFixed(2)).join(' · ')
+      + (pd.pending.length ? '<br>' + pd.pending.length + ' voorspelling(en) wachten op controle.' : '');
+  }
+  function pdRender(){
+    $('pdStats').innerHTML = pdStatsHtml();
+    $('pdTable').style.display = pdRows.length ? '' : 'none';
+    const f = v => Number.isFinite(v) ? '<span class="' + (v > 0 ? 'up' : v < 0 ? 'down' : '') + '">' + (v > 0 ? '+' : '') + v.toFixed(1) + '%</span>' : '–';
+    $('pdBody').innerHTML = pdRows.map(r => '<tr data-addr="' + esc(r.token) + '"><td><b>' + esc(r.sym) + '</b><div class="note" style="margin:0;">' + (r.mcap ? 'MCap ' + fmtUsd(r.mcap) : '') + '</div></td>'
+      + '<td><b class="' + (r.s >= 0.55 ? 'up' : r.s < 0.4 ? 'down' : '') + '">' + Math.round(r.s * 100) + '%</b></td><td class="note" style="margin:0; max-width:300px;">' + esc(r.why || '') + '</td>'
+      + '<td>' + f(r.m5) + '</td><td>' + f(r.h1) + '</td><td>' + f(r.h24) + '</td><td>' + (r.v1 ? fmtUsd(r.v1) : '–') + '</td><td>' + (r.buys != null ? Math.round(r.buys * 100) + '%' : '–') + '</td><td>' + fmtUsd(r.liq) + '</td></tr>').join('');
+  }
+  async function pdScan(){
+    if (pdBusy) return; pdBusy = true;
+    const st = $('pdStatus'); $('pdScanBtn').disabled = true; heavyJobs++;
+    try {
+      st.textContent = 'Oude voorspellingen controleren…';
+      const learned = await pdResolve();
+      st.textContent = 'Coins verzamelen…';
+      let items = [];
+      const add = list => list.forEach(x => { if (x && x.token && !items.some(y => y.token === x.token)) items.push(x); });
+      if ($('pdWatch').checked && watchlist.length) add(await radarCandidates('watch').catch(() => []));
+      if ($('pdTrend').checked) add(await radarCandidates('trending').catch(() => []));
+      if ($('pdNew').checked) add(await radarCandidates('new').catch(() => []));
+      if ($('pdBig').checked) add(await radarCandidates('big').catch(() => []));
+      if (!items.length) throw new Error('geen coins gevonden — vink een bron aan');
+      st.textContent = 'Gegevens ophalen…';
+      const pairs = {};
+      for (let k = 0; k < items.length; k += 30){
+        const res = await fetchWithTimeout('https://api.dexscreener.com/latest/dex/tokens/' + items.slice(k, k + 30).map(x => x.token).join(','), undefined, 9000);
+        const data = await res.json();
+        ((data && data.pairs) || []).forEach(pr => {
+          const a = pr.baseToken && pr.baseToken.address; if (!a || pr.chainId !== 'solana') return;
+          const l = (pr.liquidity && pr.liquidity.usd) || 0;
+          if (!pairs[a] || l > ((pairs[a].liquidity && pairs[a].liquidity.usd) || 0)) pairs[a] = pr;
+        });
+      }
+      const minLiq = Number($('pdLiq').value) || 50000, H = Number($('pdHorizon').value) || 3600000, t = Date.now();
+      pdRows = [];
+      Object.values(pairs).forEach(pr => {
+        const liq = (pr.liquidity && pr.liquidity.usd) || 0;
+        const price = Number(pr.priceUsd);
+        if (liq < minLiq || !(price > 0) || pr.baseToken.address === SOL_MINT) return;
+        const x = pdFeatures(pr), s2 = pdScore(x), tx = (pr.txns && pr.txns.h1) || {};
+        const b = Number(tx.buys) || 0, se = Number(tx.sells) || 0;
+        pdRows.push({ token: pr.baseToken.address, pool: pr.pairAddress, sym: pr.baseToken.symbol, mcap: Number(pr.marketCap || pr.fdv) || 0, liq, price, x, s: s2, why: pdWhy(x),
+          m5: Number(pr.priceChange && pr.priceChange.m5), h1: Number(pr.priceChange && pr.priceChange.h1), h24: Number(pr.priceChange && pr.priceChange.h24),
+          v1: Number(pr.volume && pr.volume.h1) || 0, buys: b + se > 0 ? b / (b + se) : null });
+      });
+      pdRows.sort((a, b) => b.s - a.s);
+      // remember EVERY scanned coin (not only the top), otherwise it would only learn from its own favourites
+      const waiting = new Set(pd.pending.map(q => q.token));
+      pdRows.forEach(r => { if (!waiting.has(r.token)) pd.pending.push({ token: r.token, pool: r.pool, sym: r.sym, t, h: H, price: r.price, x: r.x, s: r.s }); });
+      if (pd.pending.length > 600) pd.pending = pd.pending.slice(-600);
+      pdSave();
+      st.textContent = 'Klaar · ' + pdRows.length + ' coins gescoord' + (learned ? ' · ' + learned + ' oude voorspelling(en) gecontroleerd en van geleerd' : '') + ' · ' + new Date().toLocaleTimeString('nl-NL') + ' · klik op een coin om hem te openen';
+      st.className = 'note ok';
+    } catch (e){ st.textContent = 'Scan mislukt: ' + e.message; st.className = 'note down'; }
+    finally { pdBusy = false; $('pdScanBtn').disabled = false; heavyJobs = Math.max(0, heavyJobs - 1); pdRender(); }
+  }
+  function setPredMode(on){
+    if (on && $('pickView').style.display !== 'none') setPickMode(false);
+    document.querySelector('.wrap').classList.toggle('pred-mode', on);
+    $('predView').style.display = on ? '' : 'none';
+    $('predNavBtn').textContent = on ? '📈 Terug naar terminal' : '🔮 Kansen';
+    if (on && location.hash !== '#kansen') history.replaceState(null, '', '#kansen');
+    if (!on && location.hash === '#kansen') history.replaceState(null, '', location.pathname + location.search);
+    if (on){ pdRender(); }
+    if (!on && chart) setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+  }
+  function pdSetupAuto(){
+    if (pdTimer) clearInterval(pdTimer);
+    const ms = Number($('pdAuto').value);
+    pdTimer = ms > 0 ? setInterval(() => { if ($('predView').style.display !== 'none' || pd.pending.length) pdScan(); }, ms) : null;
+  }
+  pdLoad();
+  $('pdHorizonTxt').textContent = $('pdHorizon').selectedOptions[0].text;
+  $('predNavBtn').addEventListener('click', () => setPredMode($('predView').style.display === 'none'));
+  $('pdScanBtn').addEventListener('click', () => { pdScan(); });
+  $('pdAuto').addEventListener('change', pdSetupAuto);
+  $('pdHorizon').addEventListener('change', () => { $('pdHorizonTxt').textContent = $('pdHorizon').selectedOptions[0].text; });
+  $('pdReset').addEventListener('click', () => { if (window.confirm('Alles wat de Kansen-pagina geleerd heeft wissen?')){ localStorage.removeItem(PD_KEY); pdLoad(); pdRows = []; pdRender(); } });
+  $('pdBody').addEventListener('click', e => {
+    const tr = e.target.closest('tr[data-addr]'); if (!tr) return;
+    setPredMode(false); $('tokenAddr').value = tr.dataset.addr; loadLive(); window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  pdSetupAuto();
+  if (location.hash === '#kansen') setPredMode(true);
 
   // ---------- events ----------
   $('loadBtn').addEventListener('click', loadLive);
