@@ -22,6 +22,8 @@
  *            KANSEN (1) = elke KANSEN_EVERY_MIN (10) minuten coins scoren en na KANSEN_H_MIN (60) minuten leren van de uitkomst,
  *            KANSEN_FILTER (auto) = auto: buys met lage kans pas overslaan als de score na ≥200 uitkomsten bewezen beter is; 1 = altijd; 0 = nooit,
  *            KANSEN_MIN (0.45) = minimale kans-score voor een buy als het filter actief is,
+ *            LET_RUN (0), RUN_FRAC (0.5) = bij TP2 maar een deel verkopen, de rest met trailing stop laten doorlopen,
+ *            USE_CONT (0), CONT_BARS (30) = na een winnende verkoop opnieuw kopen als de trend doorzet (auto-tune kiest dit per coin),
  *            MAX_COINS (6) = max. aantal coins dat je via Telegram/terminal kunt toevoegen (bovenop TOKEN_ADDRESS niet meer dan dit totaal).
  *            plus de strategie-instellingen (EMA_FAST, EMA_SLOW, ATR_MULT_SL, RR_TP1, RR_TP2, …).
  */
@@ -81,6 +83,10 @@ function getParams() {
     trendLen: num('TREND_LEN', 50),
     minEdge: num('MIN_EDGE', 2),
     useHtf: flag('USE_HTF', false),
+    letRun: flag('LET_RUN', false),
+    runFrac: Math.min(0.95, Math.max(0.05, num('RUN_FRAC', 0.5))),
+    useCont: flag('USE_CONT', false),
+    contBars: num('CONT_BARS', 30),
     htfMult: num('HTF_MULT', 4),
     htfLen: 20
   };
@@ -154,9 +160,10 @@ function runEngine(bars, p) {
 
   let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1;
   let lastBullCross = -1e9, crossUsed = true, lastExitIdx = -1e9;
+  let tp2Hit = false, lastWinExitIdx = -1e9, gross = 0;
   const events = [];
 
-  function finish(i) { inPos = false; lastExitIdx = i; }
+  function finish(i) { inPos = false; lastExitIdx = i; if (gross > 0) lastWinExitIdx = i; }
 
   for (let i = 0; i < n; i++) {
     const bullCross = i > 0 && emaF[i] > emaS[i] && emaF[i - 1] <= emaS[i - 1];
@@ -166,24 +173,40 @@ function runEngine(bars, p) {
 
     if (inPos && i > entryIdx) {
       if (L[i] <= stop) {
-        events.push({ time: bars[i].time, type: stop > entry * 1.0001 ? 'TRAIL' : 'SL', price: Math.min(stop, O[i]) });
+        const px = Math.min(stop, O[i]);
+        gross += size * (px / entry - 1);
+        events.push({ time: bars[i].time, type: stop > entry * 1.0001 ? 'TRAIL' : 'SL', price: px });
         finish(i); exitedThisBar = true;
       } else {
         if (!tp1Hit && H[i] >= tp1) {
           tp1Hit = true;
+          gross += p.partialFrac * (tp1 / entry - 1);
           events.push({ time: bars[i].time, type: 'TP1', price: tp1 });
           size -= p.partialFrac;
           if (p.beAfterTp1) stop = Math.max(stop, entry);
         }
-        if (H[i] >= tp2) {
+        if (H[i] >= tp2 && !tp2Hit && !p.letRun) {
+          gross += size * (tp2 / entry - 1);
           events.push({ time: bars[i].time, type: 'TP2', price: tp2 });
           finish(i); exitedThisBar = true;
-        } else if (p.exitOnCross && bearCross) {
-          events.push({ time: bars[i].time, type: 'EXIT', price: C[i] });
-          finish(i); exitedThisBar = true;
-        } else if (tp1Hit && p.trailMult > 0 && atr[i] != null) {
-          hh = Math.max(hh, H[i]);
-          stop = Math.max(stop, hh - atr[i] * p.trailMult);
+        } else {
+          // "let it run": at TP2 sell only part, lock in at least TP1 and let a trailing stop ride the rest
+          if (H[i] >= tp2 && !tp2Hit && p.letRun) {
+            tp2Hit = true;
+            const rf = Math.min(0.95, Math.max(0.05, p.runFrac || 0.5));
+            gross += size * rf * (tp2 / entry - 1);
+            events.push({ time: bars[i].time, type: 'TP2', price: tp2, frac: rf });
+            size -= size * rf;
+            stop = Math.max(stop, tp1);
+          }
+          if (p.exitOnCross && bearCross) {
+            gross += size * (C[i] / entry - 1);
+            events.push({ time: bars[i].time, type: 'EXIT', price: C[i] });
+            finish(i); exitedThisBar = true;
+          } else if (tp1Hit && p.trailMult > 0 && atr[i] != null) {
+            hh = Math.max(hh, H[i]);
+            stop = Math.max(stop, hh - atr[i] * p.trailMult);
+          }
         }
       }
     }
@@ -209,6 +232,9 @@ function runEngine(bars, p) {
         const sweep = L[i] < priorLow && C[i] > priorLow;
         if (oversoldTurn || sweep) tags.push('REV');
       }
+      // continuation: shortly after a winning exit, buy again when the trend is still up and price bounces off the fast EMA
+      if (p.useCont && cool && green && (i - lastWinExitIdx) <= (p.contBars || 30) && emaF[i] > emaS[i] && emaS[i] > emaS[i - 3]
+          && C[i] > emaF[i] && closePos >= 0.6 && (L[i] <= emaF[i] * 1.005 || L[i - 1] <= emaF[i - 1] * 1.005)) tags.push('CONT');
       if (p.useBrk && cool && green && C[i] > emaS[i]) {
         let hi = 0;
         for (let k = i - p.donLen; k < i; k++) hi = Math.max(hi, H[k]);
@@ -231,7 +257,7 @@ function runEngine(bars, p) {
         if (risk > 0 && edgeOk) {
           inPos = true; entry = C[i]; stop = stopPx;
           tp1 = entry + risk * p.rrTp1; tp2 = entry + risk * p.rrTp2;
-          tp1Hit = false; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i;
+          tp1Hit = false; tp2Hit = false; gross = 0; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i;
           events.push({ time: bars[i].time, type: 'BUY', price: C[i], src });
         }
       }
@@ -461,16 +487,19 @@ const TUNE_DAYS = Math.min(30, Math.max(3, num('TUNE_DAYS', 14)));
 const PAUSE_BAD = flag('PAUSE_BAD_COINS', true);
 
 // same trade maths as the web app: TP1 sells partialFrac, the rest leaves at the final exit; costs once per trade
-function tradesFromEvents(events, p){
+function tradesFromEvents(events, p, lastClose){
   const out = []; let entry = null, entryTime = 0, size = 0, gross = 0;
   for (const e of events){
     if (e.type === 'BUY'){ entry = e.price; entryTime = e.time; size = 1; gross = 0; continue; }
     if (entry == null) continue;
     if (e.type === 'TP1'){ gross += p.partialFrac * (e.price / entry - 1); size -= p.partialFrac; continue; }
+    if (e.type === 'TP2' && e.frac != null){ gross += size * e.frac * (e.price / entry - 1); size -= size * e.frac; continue; }
     gross += size * (e.price / entry - 1);
     out.push({ entryTime, exitTime: e.time, ret: gross - p.costPct / 100 });
     entry = null;
   }
+  // a position still open at the end counts at the last price, exactly like the website
+  if (entry != null && lastClose > 0) out.push({ entryTime, exitTime: null, ret: gross + size * (lastClose / entry - 1) - p.costPct / 100, open: true });
   return out;
 }
 function growth(trades){
@@ -503,9 +532,9 @@ function tuneGrid(base){
       out.push(Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr, useHtf: hf }));
   return out;
 }
-const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend', 'useHtf'];
-const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND', useHtf: 'USE_HTF' };
-function describe(p){ return 'EMA ' + p.emaFastLen + '/' + p.emaSlowLen + ' · SL ' + p.atrMultSL + '×ATR · TP ' + p.rrTp1 + '/' + p.rrTp2 + ' · ' + [p.useEma && 'EMA', p.useRev && 'Dip', p.useBrk && 'Breakout'].filter(Boolean).join('+') + (p.useTrend ? ' · trend' : '') + (p.useHtf ? ' · grote tf' : ''); }
+const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend', 'useHtf', 'letRun', 'useCont'];
+const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND', useHtf: 'USE_HTF', letRun: 'LET_RUN', useCont: 'USE_CONT' };
+function describe(p){ return 'EMA ' + p.emaFastLen + '/' + p.emaSlowLen + ' · SL ' + p.atrMultSL + '×ATR · TP ' + p.rrTp1 + '/' + p.rrTp2 + ' · ' + [p.useEma && 'EMA', p.useRev && 'Dip', p.useBrk && 'Breakout'].filter(Boolean).join('+') + (p.useTrend ? ' · trend' : '') + (p.useHtf ? ' · grote tf' : '') + (p.letRun ? ' · winst laten lopen' : '') + (p.useCont ? ' · herinstap' : ''); }
 const pctStr = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
 
 async function evaluateCoin(token){
@@ -520,7 +549,7 @@ async function evaluateCoin(token){
   if (inPeriod.length < 200) { console.log('auto-tune', tag, 'te weinig candles', inPeriod.length); return null; }
   const split = inPeriod[Math.floor(inPeriod.length * 0.7)].time;
   const evalP = p => {
-    const tr = tradesFromEvents(runEngine(bars, p).events, p).filter(t => t.entryTime >= start);
+    const tr = tradesFromEvents(runEngine(bars, p).events, p, bars[bars.length - 1].close).filter(t => t.entryTime >= start);
     return { p, train: growth(tr.filter(t => t.entryTime < split)), test: growth(tr.filter(t => t.entryTime >= split)), full: growth(tr) };
   };
   const cur = evalP(paramsFor(c));
@@ -531,6 +560,14 @@ async function evaluateCoin(token){
     if (r.train.n >= 8) results.push(Object.assign(r, { rank: Math.log(r.train.e) / (1 + 3 * Math.abs(r.train.dd)) }));
     if (i % 40 === 0) await new Promise(r2 => setImmediate(r2));   // keep the bot (stop-watch, ticks) responsive
   }
+  results.sort((a, b) => b.rank - a.rank);
+  // stage 2: on the 30 best, also try "let profits run" and "re-enter in the trend"
+  const extra = [];
+  for (const r of results.slice(0, 30)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }]){
+    const r2 = evalP(Object.assign({}, r.p, v));
+    if (r2.train.n >= 8) extra.push(Object.assign(r2, { rank: Math.log(r2.train.e) / (1 + 3 * Math.abs(r2.train.dd)) }));
+  }
+  results.push(...extra);
   results.sort((a, b) => b.rank - a.rank);
   // pick from the 10 best on the TRAINING part the one that does best on the TEST part it has not seen
   const pool = results.slice(0, 10).filter(r => r.test.n >= 3 && r.test.e > 1.01);   // at least +1% after costs on unseen data

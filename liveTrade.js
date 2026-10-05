@@ -16,6 +16,7 @@
  * MAX_ROUND_TRIP_PCT (8)       don't buy if buying + selling right away would cost more than this (honeypot check)
  * SAFETY_CHECK (1)             check mint/freeze authority + round trip before every buy
  * PRIORITY_FEE_MAX_LAMPORTS (200000)  max priority fee per swap, helps transactions land
+ * MAX_SLIPPAGE_BPS (1000)      highest slippage a BUY retry may use · MAX_SELL_SLIPPAGE_BPS (1500) same for sells
  * RPC_URL                      your own RPC (Helius/QuickNode) is much more reliable than the public one
  */
 const web3 = require('@solana/web3.js');
@@ -66,11 +67,12 @@ async function jup(path, opts){
   }
   throw lastErr;
 }
-async function quote(inputMint, outputMint, amountRaw){
-  const slip = env('SLIPPAGE_BPS', 300);
+async function quote(inputMint, outputMint, amountRaw, slipBps){
+  const slip = slipBps || env('SLIPPAGE_BPS', 300);
   return jup('/quote?inputMint=' + inputMint + '&outputMint=' + outputMint + '&amount=' + amountRaw + '&slippageBps=' + slip);
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const RETRY_WAIT_MS = () => env('RETRY_WAIT_MS', 1500);
 
 // Build, sign, send AND wait for confirmation. Throws if the swap did not land or failed on-chain.
 async function swap(quoteResponse, owner){
@@ -188,11 +190,25 @@ async function doBuy(mint, s, info){
   const q = await quote(SOL_MINT, mint, lamports);
   const problems = await safetyProblems(mint, q, lamports, info);
   if (problems.length) return say('LIVE BUY geweigerd door veiligheidscheck (' + mint.slice(0, 6) + '): ' + problems.join(' · '));
-  const sig = await swap(q, owner);
+  // try, and if it fails (slippage, network busy, expired) try once more with a fresh quote and a bit more slippage —
+  // but first check the wallet: if the first attempt landed after all, never buy a second time
+  let sig = null, lastErr = null, slip = env('SLIPPAGE_BPS', 300), retried = false;
+  for (let attempt = 0; attempt < 2 && !sig; attempt++){
+    if (attempt > 0){
+      if ((await tokenRawBalance(owner, mint)) > 0n){ sig = '(eerste poging kwam toch aan)'; break; }
+      slip = Math.min(env('MAX_SLIPPAGE_BPS', 1000), Math.round(slip * 1.7));
+      retried = true;
+      await sleep(RETRY_WAIT_MS());
+    }
+    try { sig = await swap(attempt === 0 ? q : await quote(SOL_MINT, mint, lamports, slip), owner); }
+    catch (e){ lastErr = e; console.log('LIVE BUY poging ' + (attempt + 1) + ' mislukt (' + mint.slice(0, 6) + '): ' + e.message); }
+  }
+  if (!sig && (await tokenRawBalance(owner, mint)) > 0n) sig = '(poging kwam toch aan)';
+  if (!sig) throw new Error('koop mislukt na 2 pogingen: ' + (lastErr ? lastErr.message : 'onbekend'));
   const raw = await tokenRawBalance(owner, mint);
   if (raw <= 0n) throw new Error('buy bevestigd maar geen tokens ontvangen (' + sig + ')');
-  s.open = true; s.tp1Done = false; s.spentSol = buySol; d.buys++;
-  await say('✅ LIVE BUY ' + buySol + ' SOL' + (mult < 1 ? ' (verkleind na verliesreeks)' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · https://solscan.io/tx/' + sig);
+  s.open = true; s.tp1Done = false; s.tp2Done = false; s.spentSol = buySol; d.buys++;
+  await say('✅ LIVE BUY ' + buySol + ' SOL' + (mult < 1 ? ' (verkleind na verliesreeks)' : '') + (retried ? ' (2e poging, slippage ' + (slip / 100) + '%)' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ' + (sig.startsWith('(') ? sig : 'https://solscan.io/tx/' + sig));
 }
 
 async function doSell(mint, s, label, frac, info){
@@ -201,18 +217,34 @@ async function doSell(mint, s, label, frac, info){
   if (raw <= 0n){ s.open = false; return say('LIVE ' + label + ': geen tokens meer in wallet — positie gesloten'); }
   const amount = frac >= 1 ? raw : raw * BigInt(Math.round(frac * 10000)) / 10000n;
   if (amount <= 0n) return;
-  const q = await quote(mint, SOL_MINT, amount.toString());
-  const sig = await swap(q, owner);
-  const gotSol = Number(q.outAmount) / 1e9;
+  const target = raw - amount;   // what should be left after this sell
+  const solBefore = await solBalance(owner);
+  let sig = null, q = null, lastErr = null, slip = env('SLIPPAGE_BPS', 300), tries = 0;
+  for (let attempt = 0; attempt < 3 && !sig; attempt++){
+    if (attempt > 0){
+      // the previous try may have landed after all: then don't sell again
+      if ((await tokenRawBalance(owner, mint)) <= target + raw / 1000n){ sig = '(vorige poging kwam toch aan)'; break; }
+      slip = Math.min(env('MAX_SELL_SLIPPAGE_BPS', 1500), Math.round(slip * 2));
+      await sleep(RETRY_WAIT_MS());
+    }
+    tries = attempt + 1;
+    try { q = await quote(mint, SOL_MINT, amount.toString(), slip); sig = await swap(q, owner); }
+    catch (e){ lastErr = e; console.log('LIVE ' + label + ' poging ' + (attempt + 1) + ' mislukt (' + mint.slice(0, 6) + '): ' + e.message); }
+  }
+  if (!sig && (await tokenRawBalance(owner, mint)) <= target + raw / 1000n) sig = '(poging kwam toch aan)';
+  if (!sig) throw new Error('verkoop mislukt na 3 pogingen: ' + (lastErr ? lastErr.message : 'onbekend') + ' — de bot probeert het later opnieuw');
+  // what really came in (wallet difference); falls back to the quote if the balance can't be read
+  let gotSol = q ? Number(q.outAmount) / 1e9 : 0;
+  try { const diff = (await solBalance(owner)) - solBefore; if (diff > 0) gotSol = diff; } catch (_){}
   if (frac >= 1){
     const pnl = gotSol + (s.receivedSol || 0) - s.spentSol;
     dayStats().pnlSol += pnl;
     try { journalFn({ mint, symbol: (info && info.symbol) || mint.slice(0, 6), spentSol: s.spentSol, gotSol: gotSol + (s.receivedSol || 0), pnlSol: pnl, exit: label, time: Date.now(), sig }); } catch (_){}
-    s.open = false; s.tp1Done = false; s.receivedSol = 0;
-    await say('💰 LIVE ' + label + ' alles verkocht · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ≈ ' + (pnl >= 0 ? '+' : '') + pnl.toFixed(4) + ' SOL · https://solscan.io/tx/' + sig);
+    s.open = false; s.tp1Done = false; s.tp2Done = false; s.receivedSol = 0;
+    await say('💰 LIVE ' + label + ' alles verkocht' + (tries > 1 ? ' (poging ' + tries + ')' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ≈ ' + (pnl >= 0 ? '+' : '') + pnl.toFixed(4) + ' SOL · ' + (sig.startsWith('(') ? sig : 'https://solscan.io/tx/' + sig));
   } else {
     s.receivedSol = (s.receivedSol || 0) + gotSol;
-    await say('💰 LIVE ' + label + ' ' + Math.round(frac * 100) + '% verkocht · ' + (info && info.symbol || mint.slice(0, 6)) + ' · https://solscan.io/tx/' + sig);
+    await say('💰 LIVE ' + label + ' ' + Math.round(frac * 100) + '% verkocht' + (tries > 1 ? ' (poging ' + tries + ')' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ' + (sig.startsWith('(') ? sig : 'https://solscan.io/tx/' + sig));
   }
 }
 
@@ -234,6 +266,12 @@ async function handleLiveEvents(events, mint, info){
           if (s.tp1Done){ console.log('LIVE TP1 overgeslagen: al genomen'); continue; }
           await doSell(mint, s, 'TP1', (info && info.partialFrac) || 0.5, info);
           s.tp1Done = true;
+        }
+        else if (e.type === 'TP2' && e.frac != null && e.frac < 1){
+          // "let it run": sell only part at TP2, the trailing stop handles the rest
+          if (s.tp2Done){ console.log('LIVE TP2 (deel) overgeslagen: al genomen'); continue; }
+          await doSell(mint, s, 'TP2', e.frac, info);
+          s.tp2Done = true;
         }
         else if (['TP2', 'SL', 'TRAIL', 'EXIT', 'SYNC'].includes(e.type)) await doSell(mint, s, e.type, 1, info);
       } catch (err){
