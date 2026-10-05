@@ -18,7 +18,11 @@
  *            DATA_DIR = map om geheugen te bewaren (Railway Volume: wordt automatisch gevonden),
  *            LIVE_LEARN_N (4) / LIVE_PAUSE_H (24) = pauzeer een coin als ≥3 van de laatste 4 ECHTE trades verlies waren (0 = uit),
  *            STAKE_ADAPT (1) = na 2 verliezen op rij de helft inzetten tot de volgende winst (nooit méér dan normaal),
- *            USE_HTF (0), HTF_MULT (4) = alleen kopen als de 4× grotere timeframe ook stijgt (auto-tune kiest dit per coin).
+ *            USE_HTF (0), HTF_MULT (4) = alleen kopen als de 4× grotere timeframe ook stijgt (auto-tune kiest dit per coin),
+ *            KANSEN (1) = elke KANSEN_EVERY_MIN (10) minuten coins scoren en na KANSEN_H_MIN (60) minuten leren van de uitkomst,
+ *            KANSEN_FILTER (auto) = auto: buys met lage kans pas overslaan als de score na ≥200 uitkomsten bewezen beter is; 1 = altijd; 0 = nooit,
+ *            KANSEN_MIN (0.45) = minimale kans-score voor een buy als het filter actief is,
+ *            MAX_COINS (6) = max. aantal coins dat je via Telegram/terminal kunt toevoegen (bovenop TOKEN_ADDRESS niet meer dan dit totaal).
  *            plus de strategie-instellingen (EMA_FAST, EMA_SLOW, ATR_MULT_SL, RR_TP1, RR_TP2, …).
  */
 const live = require('./liveTrade');
@@ -319,12 +323,19 @@ live.setNotify(notify);
 
 let manualStop = false;   // set by /stop in Telegram: no new buys until /hervat
 let autoTokens = [];      // coins the bot picked itself (AUTO_COINS)
+let addedTokens = [];     // coins you added from the terminal / Telegram
+let removedTokens = [];   // coins from TOKEN_ADDRESS you switched off from the terminal / Telegram
+function manualTokens(){
+  const set = new Set(TOKEN_LIST.filter(t => !removedTokens.includes(t)));
+  addedTokens.forEach(t => set.add(t));
+  return [...set];
+}
 function activeTokens(){
-  const set = new Set([...TOKEN_LIST, ...autoTokens]);
+  const set = new Set([...manualTokens(), ...autoTokens]);
   coins.forEach((c, t) => { if (live.isOpen(t)) set.add(t); });   // keep managing a position even if the coin was dropped
   return [...set];
 }
-function exitOnly(token){ return !TOKEN_LIST.includes(token) && !autoTokens.includes(token); }
+function exitOnly(token){ return !manualTokens().includes(token) && !autoTokens.includes(token); }
 
 // per coin: pool, seen signals, the candle that was still forming at the previous tick, latest strategy state
 const coins = new Map();
@@ -402,6 +413,7 @@ async function tickOne(token) {
       await notify('⏸️ ' + tag + ': BUY niet uitgevoerd — coin is gepauzeerd door de auto-tune (de strategie werkt hier nu niet)');
       todo = todo.filter(e => e.type !== 'BUY');
     }
+    if (todo.some(e => e.type === 'BUY') && !(await ksAllowBuy(token, tag))) todo = todo.filter(e => e.type !== 'BUY');
     if (todo.length) await live.handleLiveEvents(todo, token, infoOf(c, token));
     await syncOne(token, c);
   }
@@ -560,7 +572,7 @@ async function tuneAll(){
   if (!TUNE_ON || tuning) return;
   tuning = true;
   try {
-    for (const token of TOKEN_LIST){   // coins picked by AUTO_COINS are re-checked by pickCoins
+    for (const token of manualTokens()){   // coins picked by AUTO_COINS are re-checked by pickCoins
       try { await tuneOne(token); } catch (e){ console.error('auto-tune fout', token.slice(0, 6), e.message); }
       await sleep(8000);
     }
@@ -668,7 +680,8 @@ live.setJournal(t => {
 function saveState(){
   if (!STATE_FILE) return;
   try {
-    const o = { v: 1, savedAt: Date.now(), manualStop, autoTokens, lossBaseline, journal: journal.slice(-500), live: live.exportState(), lastReportDay, coins: {} };
+    const o = { v: 1, savedAt: Date.now(), manualStop, autoTokens, addedTokens, removedTokens, lossBaseline, journal: journal.slice(-500), live: live.exportState(), lastReportDay, coins: {},
+      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) } };
     coins.forEach((c, t) => { o.coins[t] = { params: c.params, pendingParams: c.pendingParams, paused: c.paused, tunedAt: c.tunedAt, livePauseUntil: c.livePauseUntil || 0, livePauseAfter: c.livePauseAfter || 0 }; });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(o));
@@ -680,10 +693,13 @@ function loadState(){
   try {
     const o = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
     manualStop = !!o.manualStop; autoTokens = Array.isArray(o.autoTokens) ? o.autoTokens : [];
+    addedTokens = Array.isArray(o.addedTokens) ? o.addedTokens : []; removedTokens = Array.isArray(o.removedTokens) ? o.removedTokens : [];
     lossBaseline = Number(o.lossBaseline) || 0; journal = Array.isArray(o.journal) ? o.journal : [];
     lastReportDay = o.lastReportDay || '';
     Object.entries(o.coins || {}).forEach(([t, v]) => { const c = coin(t); c.params = v.params || null; c.pendingParams = v.pendingParams || null; c.paused = !!v.paused; c.tunedAt = v.tunedAt || 0; c.livePauseUntil = Number(v.livePauseUntil) || 0; c.livePauseAfter = Number(v.livePauseAfter) || 0; });
     live.importState(o.live);
+    if (o.kansen && Array.isArray(o.kansen.w) && o.kansen.w.length === KS_PRIOR.length)
+      ks = { w: o.kansen.w, b: Number(o.kansen.b) || 0, pending: o.kansen.pending || [], done: o.kansen.done || [] };
     return true;
   } catch (e){ console.error('geheugen laden mislukt', e.message); return false; }
 }
@@ -697,6 +713,141 @@ function reportText(){
   lines.push('Totaal: ' + (tot >= 0 ? '+' : '') + tot.toFixed(4) + ' SOL' + (MAX_TOTAL_LOSS > 0 ? ' · verlieslimiet ' + MAX_TOTAL_LOSS + ' SOL (nog ' + Math.max(0, MAX_TOTAL_LOSS + (tot - lossBaseline)).toFixed(4) + ' ruimte)' : ''));
   lines.push('Laatste: ' + journal.slice(-5).reverse().map(t => (t.symbol || '?') + ' ' + (t.pnlSol >= 0 ? '+' : '') + t.pnlSol.toFixed(4)).join(' · '));
   return lines.join('\n');
+}
+
+// ---------- Kansen: score coins, check the outcome later, learn — 24/7 ----------
+const KANSEN = flag('KANSEN', true);
+const KANSEN_EVERY = Math.max(2, num('KANSEN_EVERY_MIN', 10)) * 60000;
+const KANSEN_H = Math.max(10, num('KANSEN_H_MIN', 60)) * 60000;
+const KANSEN_MIN_LIQ = num('KANSEN_MIN_LIQ', 50000);
+const KANSEN_FILTER = String(process.env.KANSEN_FILTER || 'auto').toLowerCase();
+const KANSEN_MIN = num('KANSEN_MIN', 0.45);
+const KS_NAMES = ['stijgt dit uur', 'stijgt nu (5m)', 'volume trekt aan', 'meer kopers (1u)', 'meer kopers (5m)', 'veel liquiditeit', 'oudere coin', 'al ver gestegen (24u)'];
+const KS_PRIOR = [0.6, 0.3, 0.5, 0.6, 0.3, 0.2, 0.1, -0.5];
+let ks = { w: KS_PRIOR.slice(), b: -0.3, pending: [], done: [] };
+let ksBusy = false, ksLastTop = [];
+const clampN = (x, a, b) => Math.max(a, Math.min(b, x));
+// same features as the Kansen tab on the website
+function ksFeatures(pr){
+  const pc = pr.priceChange || {}, vol = pr.volume || {}, tx = pr.txns || {};
+  const ratio = o => { const b = Number(o && o.buys) || 0, s2 = Number(o && o.sells) || 0; return b + s2 > 0 ? b / (b + s2) - 0.5 : 0; };
+  const v1 = Number(vol.h1) || 0, v6 = Number(vol.h6) || 0;
+  const accel = v6 > 0 ? Math.log((v1 + 1) / (v6 / 6 + 1)) : 0;
+  const liq = (pr.liquidity && Number(pr.liquidity.usd)) || 0;
+  const ageH = pr.pairCreatedAt ? (Date.now() - pr.pairCreatedAt) / 3600000 : 24 * 30;
+  return [clampN((Number(pc.h1) || 0) / 30, -2, 2), clampN((Number(pc.m5) || 0) / 10, -2, 2), clampN(accel, -2, 2),
+    clampN(ratio(tx.h1) * 4, -2, 2), clampN(ratio(tx.m5) * 4, -2, 2),
+    clampN((Math.log10(liq + 1) - 5) / 1.5, -2, 2), clampN(Math.log10(ageH + 1) - 1.5, -2, 2), clampN((Number(pc.h24) || 0) / 100, -2, 3)];
+}
+const ksScore = x => 1 / (1 + Math.exp(-(ks.b + x.reduce((a, v, i) => a + v * ks.w[i], 0))));
+async function dexPairs(tokens){
+  const out = {};
+  for (let k = 0; k < tokens.length; k += 30){
+    const data = await fetchJson('https://api.dexscreener.com/latest/dex/tokens/' + tokens.slice(k, k + 30).join(','), 9000, 1);
+    ((data && data.pairs) || []).forEach(pr => {
+      const a = pr.baseToken && pr.baseToken.address; if (!a || pr.chainId !== 'solana') return;
+      const l = (pr.liquidity && pr.liquidity.usd) || 0;
+      if (!out[a] || l > ((out[a].liquidity && out[a].liquidity.usd) || 0)) out[a] = pr;
+    });
+  }
+  return out;
+}
+async function ksResolve(){
+  const now = Date.now();
+  const due = ks.pending.filter(q => now - q.t >= q.h);
+  if (!due.length) return 0;
+  const cost = getParams().costPct / 100;
+  const priceOf = {};
+  for (let k = 0; k < due.length; k += 30){
+    try {
+      const data = await fetchJson('https://api.dexscreener.com/latest/dex/tokens/' + due.slice(k, k + 30).map(q => q.token).join(','), 9000, 1);
+      ((data && data.pairs) || []).forEach(pr => { if (pr.pairAddress && pr.priceUsd) priceOf[pr.pairAddress] = Number(pr.priceUsd); });
+    } catch (_){ return 0; }
+  }
+  let learned = 0;
+  due.forEach(q => {
+    const p2 = priceOf[q.pool];
+    if (p2 > 0){ q.ret = p2 / q.price - 1; q.y = q.ret > cost ? 1 : 0; }
+    else if (now - q.t > q.h * 3){ q.ret = -1; q.y = 0; }   // pool gone for a long time: most likely rugged
+    if (q.y == null) return;
+    const pz = ksScore(q.x), lr = 0.05;
+    for (let i = 0; i < ks.w.length; i++) ks.w[i] -= lr * ((pz - q.y) * q.x[i] + 0.001 * ks.w[i]);
+    ks.b -= lr * (pz - q.y);
+    ks.done.push({ t: q.t, s: q.s, ret: q.ret, y: q.y });
+    learned++;
+  });
+  ks.pending = ks.pending.filter(q => q.y == null);
+  if (ks.done.length > 2000) ks.done = ks.done.slice(-2000);
+  return learned;
+}
+function ksStats(){
+  const d = ks.done;
+  const scans = {}; d.forEach(r => { (scans[r.t] = scans[r.t] || []).push(r); });
+  let topR = 0, topN = 0, allR = 0, allN = 0, topHit = 0;
+  Object.values(scans).forEach(list => {
+    list.sort((a, b) => b.s - a.s);
+    list.slice(0, 5).forEach(r => { topR += r.ret; topN++; if (r.y) topHit++; });
+    list.forEach(r => { allR += r.ret; allN++; });
+  });
+  const base = d.length ? d.filter(r => r.y).length / d.length : 0;
+  const avgTop = topN ? topR / topN : 0, avgAll = allN ? allR / allN : 0, hit = topN ? topHit / topN : 0;
+  const proven = d.length >= 200 && avgTop > avgAll + 0.005 && hit > base + 0.03;
+  return { n: d.length, avgTop, avgAll, hit, base, proven };
+}
+function ksFilterActive(){
+  if (!KANSEN || KANSEN_FILTER === '0') return false;
+  if (KANSEN_FILTER === '1' || KANSEN_FILTER === 'true') return true;
+  return ksStats().proven;
+}
+function ksText(){
+  const st = ksStats();
+  const lines = ['🔮 Kansen (' + st.n + ' uitkomsten): top-5 gem. ' + pctStr(st.avgTop) + ' · alle coins ' + pctStr(st.avgAll) + ' · top-5 raak ' + Math.round(st.hit * 100) + '% vs basis ' + Math.round(st.base * 100) + '%'];
+  lines.push(st.n < 200 ? '⏳ nog aan het leren — beïnvloedt de trades nog niet' : st.proven ? '✅ bewezen beter: buys onder ' + Math.round(KANSEN_MIN * 100) + '% kans worden overgeslagen' : '⚠️ (nog) niet beter dan willekeurig — beïnvloedt de trades niet');
+  if (KANSEN_FILTER === '1' || KANSEN_FILTER === 'true') lines.push('(KANSEN_FILTER=1: filter staat geforceerd aan)');
+  if (ksLastTop.length) lines.push('Nu hoogst: ' + ksLastTop.slice(0, 5).map(r => r.sym + ' ' + Math.round(r.s * 100) + '%').join(' · '));
+  return lines.join('\n');
+}
+async function ksScan(){
+  if (!KANSEN || ksBusy) return;
+  ksBusy = true;
+  try {
+    const learned = await ksResolve();
+    const tokens = new Set(activeTokens());
+    try {
+      const json = await fetchJson('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?include=base_token&page=1', 12000, 1);
+      ((json && json.data) || []).forEach(d => {
+        const id = d.relationships && d.relationships.base_token && d.relationships.base_token.data && d.relationships.base_token.data.id;
+        if (id) tokens.add(id.replace(/^solana_/, ''));
+      });
+    } catch (_){}
+    tokens.delete(live.SOL_MINT || 'So11111111111111111111111111111111111111112');
+    const pairs = await dexPairs([...tokens].slice(0, 60));
+    const t = Date.now(), waiting = new Set(ks.pending.map(q => q.token)), rows = [];
+    Object.values(pairs).forEach(pr => {
+      const liq = (pr.liquidity && pr.liquidity.usd) || 0, price = Number(pr.priceUsd);
+      if (liq < KANSEN_MIN_LIQ || !(price > 0)) return;
+      const x = ksFeatures(pr), sc = ksScore(x);
+      rows.push({ token: pr.baseToken.address, sym: pr.baseToken.symbol, s: sc });
+      if (!waiting.has(pr.baseToken.address)) ks.pending.push({ token: pr.baseToken.address, pool: pr.pairAddress, t, h: KANSEN_H, price, x, s: sc });
+    });
+    if (ks.pending.length > 800) ks.pending = ks.pending.slice(-800);
+    rows.sort((a, b) => b.s - a.s); ksLastTop = rows;
+    if (learned) console.log('Kansen:', learned, 'uitkomsten geleerd ·', ksStats().n, 'totaal');
+    saveState();
+  } catch (e){ console.error('Kansen-fout', e.message); }
+  finally { ksBusy = false; }
+}
+// before a buy: when the score has proven itself, skip coins with a low chance right now
+async function ksAllowBuy(token, tag){
+  if (!ksFilterActive()) return true;
+  try {
+    const pr = (await dexPairs([token]))[token];
+    if (!pr) return true;
+    const sc = ksScore(ksFeatures(pr));
+    if (sc >= KANSEN_MIN) return true;
+    await notify('🔮 ' + tag + ': BUY overgeslagen — kans-score ' + Math.round(sc * 100) + '% is lager dan ' + Math.round(KANSEN_MIN * 100) + '%');
+    return false;
+  } catch (_){ return true; }
 }
 
 // ---------- Telegram: control the bot from your phone ----------
@@ -725,7 +876,8 @@ function statusText(){
     if (c.pendingParams) parts.push('nieuwe instellingen na sluiten positie');
     lines.push('• ' + tag + ': ' + parts.join(' · '));
   }
-  lines.push('Auto-tune: ' + (TUNE_ON ? (TUNE_APPLY ? 'aan' : 'alleen voorstellen') : 'uit') + ' · stop-wachter: ' + (STOPWATCH_MS ? 'aan' : 'uit'));
+  lines.push('Auto-tune: ' + (TUNE_ON ? (TUNE_APPLY ? 'aan' : 'alleen voorstellen') : 'uit') + ' · stop-wachter: ' + (STOPWATCH_MS ? 'aan' : 'uit')
+    + (KANSEN ? ' · kansen: ' + ksStats().n + ' uitkomsten' + (ksFilterActive() ? ' (filter AAN)' : ' (leert, filter nog uit)') : ''));
   return lines.join('\n');
 }
 async function tgSend(text){
@@ -736,10 +888,19 @@ async function tgSend(text){
   } catch (e){ console.error('Telegram fout', e.message); }
 }
 async function handleCommand(text){
-  const cmd = String(text || '').trim().split(/\s+/)[0].toLowerCase().replace(/@.*$/, '');
-  const arg = String(text || '').trim().split(/\s+/).slice(1).join(' ').toUpperCase();
+  let cmd = String(text || '').trim().split(/\s+/)[0].toLowerCase().replace(/@.*$/, '');
+  let rawArg = String(text || '').trim().split(/\s+/).slice(1).join(' ');
+  // links from the terminal open Telegram with "/start add_<coin>", "/start del_<coin>", "/start stop", "/start hervat"
+  if (cmd === '/start' && rawArg){
+    const m = rawArg.match(/^(add|del)_([1-9A-HJ-NP-Za-km-z]{32,44})$/);
+    if (m){ cmd = m[1] === 'add' ? '/coin' : '/weg'; rawArg = m[2]; }
+    else if (/^(stop|hervat|status|rapport|kansen|coinlijst)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
+  }
+  const arg = rawArg.toUpperCase();
+  if (cmd === '/coin' || cmd === '/weg' || cmd === '/coinlijst') return coinCommand(cmd, rawArg.trim());
   if (cmd === '/status') return tgSend(statusText());
   if (cmd === '/rapport') return tgSend(reportText());
+  if (cmd === '/kansen') return tgSend(KANSEN ? ksText() : 'Kansen staat uit (KANSEN=0).');
   if (cmd === '/coins'){
     if (!AUTO_COINS) return tgSend('Zelf coins kiezen staat uit. Zet AUTO_COINS=3 in Railway om het aan te zetten.');
     if (picking) return tgSend('De coin-keuze is al bezig.');
@@ -768,7 +929,40 @@ async function handleCommand(text){
   }
   if (cmd === '/start') return tgSend(statusText() + '\n\nStuur /help voor de commando\'s.');
   if (cmd.startsWith('/'))
-    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/help — deze lijst');
+    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/help — deze lijst');
+}
+const MAX_COINS = Math.max(1, Math.floor(num('MAX_COINS', 6)));
+async function coinCommand(cmd, addr){
+  if (cmd === '/coinlijst'){
+    const list = activeTokens();
+    if (!list.length) return tgSend('De bot volgt nu geen coins.');
+    return tgSend('Coins van deze bot:\n' + list.map(t => '• ' + infoOf(coin(t), t).symbol + ' — ' + t + (addedTokens.includes(t) ? ' (toegevoegd)' : TOKEN_LIST.includes(t) ? ' (TOKEN_ADDRESS)' : autoTokens.includes(t) ? ' (zelf gekozen)' : ' (alleen nog verkopen)')).join('\n'));
+  }
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) return tgSend('Dat is geen geldig Solana-adres. Gebruik: ' + cmd + ' <coin-adres>');
+  if (cmd === '/weg'){
+    const was = manualTokens().includes(addr);
+    addedTokens = addedTokens.filter(t => t !== addr);
+    if (TOKEN_LIST.includes(addr) && !removedTokens.includes(addr)) removedTokens.push(addr);
+    saveState();
+    const sym = infoOf(coin(addr), addr).symbol;
+    return tgSend(was ? '➖ ' + sym + ' weggehaald: de bot koopt deze coin niet meer' + (live.isOpen(addr) ? ' (de open positie wordt nog netjes verkocht).' : '.') : sym + ' stond niet in de lijst.');
+  }
+  // /coin <address>: check that the coin exists and has a real pool before adding it
+  if (manualTokens().includes(addr)) return tgSend('Deze coin volgt de bot al.');
+  if (manualTokens().length >= MAX_COINS) return tgSend('Je hebt al ' + manualTokens().length + ' coins (max ' + MAX_COINS + '). Haal er eerst een weg met /weg <adres>, of zet MAX_COINS hoger in Railway.');
+  let ctx;
+  try { ctx = await fetchBestPair(addr); }
+  catch (e){ return tgSend('Kon deze coin niet vinden op DexScreener: ' + e.message.slice(0, 80)); }
+  const liq = ctx.pair.liquidity ? Number(ctx.pair.liquidity.usd) || 0 : 0;
+  const minLiq = num('MIN_LIQUIDITY_USD', 20000);
+  if (liq < minLiq) return tgSend('Niet toegevoegd: ' + ((ctx.pair.baseToken && ctx.pair.baseToken.symbol) || addr.slice(0, 6)) + ' heeft maar $' + Math.round(liq).toLocaleString('nl-NL') + ' liquiditeit (minimaal $' + minLiq.toLocaleString('nl-NL') + ').');
+  removedTokens = removedTokens.filter(t => t !== addr);
+  if (!TOKEN_LIST.includes(addr)) addedTokens.push(addr);
+  const c = coin(addr); c.ctx = ctx;
+  saveState();
+  const sym = (ctx.pair.baseToken && ctx.pair.baseToken.symbol) || addr.slice(0, 6);
+  await tgSend('➕ ' + sym + ' toegevoegd (liquiditeit $' + Math.round(liq).toLocaleString('nl-NL') + '). De bot volgt hem vanaf de volgende ronde' + (TUNE_ON ? ' en test hem binnen een paar minuten met de auto-tune.' : '.') + (live.liveEnabled() ? '' : '\nLet op: live handelen staat UIT in Railway, dus alleen signalen.'));
+  if (TUNE_ON && TUNE_APPLY) setTimeout(() => { tuneOne(addr).catch(() => {}); }, 2 * 60 * 1000);
 }
 async function pollTelegram(){
   if (!TG_CMDS) return;
@@ -801,13 +995,13 @@ async function dailyReport(){
   if (n.hour !== REPORT_HOUR || lastReportDay === n.day) return;
   lastReportDay = n.day;
   saveState();
-  await tgSend('📊 Dagrapport ' + n.day + '\n' + statusText() + '\n\n' + reportText());
+  await tgSend('📊 Dagrapport ' + n.day + '\n' + statusText() + '\n\n' + reportText() + (KANSEN ? '\n\n' + ksText() : ''));
 }
 
 async function tick() {
   const list = activeTokens();
   if (!list.length){
-    if (!AUTO_COINS) throw new Error('Zet TOKEN_ADDRESS in Railway (één mint of mint1,mint2,mint3) of AUTO_COINS=3');
+    if (!AUTO_COINS) throw new Error('Geen coins: zet TOKEN_ADDRESS in Railway, voeg een coin toe vanuit de terminal (➕ Naar bot) of zet AUTO_COINS=3');
     console.log('nog geen coins gekozen — wacht op de coin-keuze');
     return;
   }
@@ -851,6 +1045,11 @@ async function start(){
   }
   setInterval(() => { dailyReport().catch(() => {}); }, 60000);
   setInterval(saveState, 60000);
+  if (KANSEN){
+    console.log('Kansen AAN: elke', KANSEN_EVERY / 60000, 'min scoren · controle na', KANSEN_H / 60000, 'min · filter:', KANSEN_FILTER, '(' + ksStats().n + ' uitkomsten in geheugen)');
+    setTimeout(() => { ksScan(); }, 90 * 1000);
+    setInterval(() => { ksScan(); }, KANSEN_EVERY);
+  }
   if (!STATE_FILE && live.liveEnabled()) notify('ℹ️ Tip: koppel in Railway een Volume aan deze service, dan onthoudt de bot /stop, zijn gekozen coins en instellingen ook na een herstart.');
   if (restored && manualStop) notify('⏸️ Herstart: de bot staat nog op /stop (onthouden). /hervat om weer te kopen.');
   if (AUTO_COINS){
@@ -867,4 +1066,5 @@ async function start(){
 
 if (require.main === module) start();
 module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
-  pickCoins, activeTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(), get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
+  pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
+  ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
