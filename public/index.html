@@ -249,7 +249,7 @@
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">S</div>
-      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 05-10 (bot-knoppen)</small></div>
+      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 05-10 (laat winst lopen)</small></div>
     </div>
     <div class="search">
       <input id="tokenAddr" value="" spellcheck="false" placeholder="Plak token-adres of link (DexScreener / GMGN / pump.fun)…">
@@ -539,6 +539,8 @@
         <div class="field"><label><input type="checkbox" id="useTrend" checked> Trendfilter: alleen kopen boven stijgende EMA</label><input id="trendLen" type="number" value="50" min="5" step="1" title="lengte van de trend-EMA"></div>
         <div class="field"><label>Kostenfilter: TP1 minimaal × kosten (0 = uit)</label><input id="minEdge" type="number" value="2" min="0" step="0.5"></div>
         <div class="field"><label><input type="checkbox" id="useHtf"> Grotere timeframe moet ook stijgen (× candles)</label><input id="htfMult" type="number" value="4" min="2" step="1" title="4 = bij 15m-candles kijkt hij naar 1-uurs-trend"></div>
+        <div class="field"><label><input type="checkbox" id="letRun"> Winst laten lopen: bij TP2 maar % verkopen</label><input id="runFrac" type="number" value="50" min="5" max="95" step="5" title="rest loopt door met trailing stop (minstens TP1 vast)"></div>
+        <div class="field"><label><input type="checkbox" id="useCont"> Herinstap: na winst opnieuw kopen als de trend doorzet</label></div>
         <div class="field"><label>Sweep: vergelijk N candles terug</label><input id="sweepLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: N-candle high</label><input id="donLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: volume × gemiddelde</label><input id="volMult" type="number" value="1.5" min="0.5" step="0.1"></div>
@@ -800,16 +802,18 @@
     };
 
     let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1, entryTime = 0;
+    let tp2Hit = false, lastWinExitIdx = -1e9;
     let curExits = [];
     let lastBullCross = -1e9, crossUsed = true, lastExitIdx = -1e9;
     const trades = [], events = [], series = [];
 
-    function closeTrade(i, price, frac, type){
+    function closeTrade(i, price, frac, type, evFrac){
       curExits.push({ time: bars[i].time, price, frac, type });
-      events.push({ time: bars[i].time, type, price });
+      events.push(evFrac != null ? { time: bars[i].time, type, price, frac: evFrac } : { time: bars[i].time, type, price });
     }
     function finishTrade(i){
       let gross = 0; curExits.forEach(x => gross += x.frac * (x.price/entry - 1));
+      if (gross > 0) lastWinExitIdx = i;
       trades.push({ entryTime, entryPrice: entry, src, exits: curExits, ret: gross - p.costPct/100, bars: i - entryIdx, exitTime: bars[i].time });
       inPos = false; curExits = []; lastExitIdx = i;
     }
@@ -832,9 +836,16 @@
             closeTrade(i, tp1, p.partialFrac, 'TP1'); size -= p.partialFrac;
             if (p.beAfterTp1) stop = Math.max(stop, entry);
           }
-          if (H[i] >= tp2){
+          if (H[i] >= tp2 && !tp2Hit && !p.letRun){
             closeTrade(i, tp2, size, 'TP2'); finishTrade(i); exitedThisBar = true;
           } else {
+            // "let it run": at TP2 sell only part, lock in at least TP1 and let a trailing stop ride the rest
+            if (H[i] >= tp2 && !tp2Hit && p.letRun){
+              tp2Hit = true;
+              const rf = Math.min(0.95, Math.max(0.05, p.runFrac || 0.5));
+              closeTrade(i, tp2, size * rf, 'TP2', rf); size -= size * rf;
+              stop = Math.max(stop, tp1);
+            }
             if (tp1Hit && p.trailMult > 0 && atr[i] != null){
               hh = Math.max(hh, H[i]);
               stop = Math.max(stop, hh - atr[i]*p.trailMult);
@@ -867,6 +878,9 @@
           const sweep = L[i] < priorLow && C[i] > priorLow;
           if (oversoldTurn || sweep) tags.push('REV');
         }
+        // continuation: shortly after a winning exit, buy again when the trend is still up and price bounces off the fast EMA
+        if (p.useCont && cool && green && (i - lastWinExitIdx) <= (p.contBars || 30) && emaF[i] > emaS[i] && emaS[i] > emaS[i-3]
+            && C[i] > emaF[i] && closePos >= 0.6 && (L[i] <= emaF[i] * 1.005 || L[i-1] <= emaF[i-1] * 1.005)) tags.push('CONT');
         if (p.useBrk && cool && green && C[i] > emaS[i]){
           let hi = 0; for (let k=i-p.donLen;k<i;k++) hi = Math.max(hi, H[k]);
           let volOk = true;
@@ -883,7 +897,7 @@
           const edgeOk = !(p.minEdge > 0) || (risk * p.rrTp1 / C[i] * 100) >= p.minEdge * p.costPct;
           if (risk > 0 && edgeOk){
             inPos = true; entry = C[i]; stop = stopPx; tp1 = entry + risk*p.rrTp1; tp2 = entry + risk*p.rrTp2;
-            tp1Hit = false; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i; entryTime = bars[i].time; curExits = [];
+            tp1Hit = false; tp2Hit = false; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i; entryTime = bars[i].time; curExits = [];
             events.push({ time: bars[i].time, type: 'BUY', price: C[i], src });
           }
         }
@@ -892,6 +906,11 @@
       series.push({ time: bars[i].time, emaF: emaF[i], emaS: emaS[i], rsi: rsi[i], vol: V[i], inPos, entry, stop, tp1, tp2, tp1Hit, size });
     }
     const last = series[series.length-1] || null;
+    // a position that is still open at the end counts at the last price (otherwise "let it run" winners would be invisible)
+    if (inPos){
+      let g = 0; curExits.forEach(x => g += x.frac * (x.price/entry - 1)); g += size * (C[n-1]/entry - 1);
+      trades.push({ entryTime, entryPrice: entry, src, exits: curExits.concat([{ time: bars[n-1].time, price: C[n-1], frac: size, type: 'OPEN' }]), ret: g - p.costPct/100, bars: n - 1 - entryIdx, exitTime: bars[n-1].time, open: true });
+    }
     return { series, events, trades, state: last ? { inPos: last.inPos, entry: last.entry, stop: last.stop, tp1: last.tp1, tp2: last.tp2, tp1Hit: last.tp1Hit, size: last.size, src } : null };
   }
 
@@ -1105,7 +1124,9 @@
       useEma: $('useEma').checked, useRev: $('useRev').checked, useBrk: $('useBrk').checked,
       useTrend: $('useTrend').checked, trendLen: Number($('trendLen').value) || 50,
       minEdge: $('minEdge').value === '' ? 2 : Number($('minEdge').value),
-      useHtf: $('useHtf').checked, htfMult: Number($('htfMult').value) || 4, htfLen: 20
+      useHtf: $('useHtf').checked, htfMult: Number($('htfMult').value) || 4, htfLen: 20,
+      letRun: $('letRun').checked, runFrac: Math.min(0.95, Math.max(0.05, (Number($('runFrac').value) || 50) / 100)),
+      useCont: $('useCont').checked, contBars: 30
     };
   }
 
@@ -1240,7 +1261,7 @@
       if (e.type === 'BUY' && e.time === formingT && lastMode === 'live')
         return { time: e.time, position: 'belowBar', color: '#9aa0a6', shape: 'arrowUp', text: 'BUY? (candle nog open)' };
       if (e.type === 'BUY') return { time: e.time, position: 'belowBar', color: c.up, shape: 'arrowUp', text: 'BUY ' + (e.src || '') };
-      if (e.type === 'TP1' || e.type === 'TP2') return { time: e.time, position: 'aboveBar', color: c.up, shape: 'circle', text: e.type };
+      if (e.type === 'TP1' || e.type === 'TP2') return { time: e.time, position: 'aboveBar', color: c.up, shape: 'circle', text: e.frac != null ? 'TP2 (' + Math.round(e.frac * 100) + '%, rest loopt)' : e.type };
       return { time: e.time, position: 'aboveBar', color: c.down, shape: 'square', text: e.type === 'TRAIL' ? 'SELL (trail)' : e.type === 'EXIT' ? 'SELL' : e.type };
     }).sort((a, b) => a.time - b.time);
     try { candleSeries.setMarkers(markers); } catch (e){ console.warn('markers', e); }
@@ -1350,6 +1371,7 @@
       V('Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })),
       V('Zonder trend- en kostenfilter', Object.assign({}, p, { useTrend: false, minEdge: 0 })),
       V('Met grotere-timeframe-filter', Object.assign({}, p, { useHtf: true })),
+      V('Winst laten lopen + herinstap', Object.assign({}, p, { letRun: true, useCont: true })),
       V('Scalp (snel winst nemen)', Object.assign({}, p, SCALP))
     ];
     const hours = (bars[bars.length-1].time - bars[0].time) / 3600;
@@ -1512,7 +1534,10 @@
     renderPaperPanel();
   }
   // TP1 = partial exit (same fraction the strategy/backtest uses); every other exit closes the whole position
-  function sellPctFor(type, p){ return type === 'TP1' ? p.partialFrac * 100 : 100; }
+  function sellPctFor(type, p, e){
+    if (e && e.frac != null) return Math.min(100, Math.max(1, e.frac * 100));   // "let it run": TP2 sells only part
+    return type === 'TP1' ? p.partialFrac * 100 : 100;
+  }
   function liquidityOk(){
     const minLiq = Number($('minLiq').value) || 0;
     const liq = pairInfo && pairInfo.liquidity ? Number(pairInfo.liquidity.usd) : null;
@@ -1535,7 +1560,7 @@
       }
       else if (e.type !== 'FLIP'){
         const had = paperState.tokenBalance > 1e-9;
-        paperSell(sellPctFor(e.type, p), e.price, p.costPct, e.type);
+        paperSell(sellPctFor(e.type, p, e), e.price, p.costPct, e.type);
         if (e.type === 'TP1' && had) paperTp1Done = true;
       }
     });
@@ -1737,7 +1762,7 @@
           logTrade(e.type, 'Overgeslagen: de bot heeft deze positie niet zelf gekocht (buy geweigerd, mislukt of overgeslagen) — je eigen tokens blijven staan.');
         else if (e.type === 'TP1' && liveTp1Done) logTrade('TP1', 'Overgeslagen: TP1 is al genomen voor deze positie.');
         else if (e.type === 'TP1'){ if (await executeSell(tokenAddress, e.type, sellPctFor(e.type, p))) liveTp1Done = true; }
-        else if (e.type === 'TP2' || e.type === 'SL' || e.type === 'TRAIL' || e.type === 'EXIT' || e.type === 'SELL') await executeSell(tokenAddress, e.type, sellPctFor(e.type, p));
+        else if (e.type === 'TP2' || e.type === 'SL' || e.type === 'TRAIL' || e.type === 'EXIT' || e.type === 'SELL') await executeSell(tokenAddress, e.type, sellPctFor(e.type, p, e));
       }
     } finally { tradeBusy = false; }
   }
@@ -2262,6 +2287,7 @@
         ['Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })],
         ['Zonder trend- en kostenfilter', Object.assign({}, p, { useTrend: false, minEdge: 0 })],
         ['Met grotere-timeframe-filter', Object.assign({}, p, { useHtf: true })],
+        ['Winst laten lopen + herinstap', Object.assign({}, p, { letRun: true, useCont: true })],
         ['Scalp (snel winst nemen)', Object.assign({}, p, SCALP)]
       ];
       const periodBars = bars.filter(b => b.time >= firstIn.time);
@@ -2295,7 +2321,7 @@
   const SET_KEY = 'signaalTerminal.settings.v1';
   const SETTING_IDS = ['emaFastLen','emaSlowLen','atrLen','atrMultSL','rrTp1','rrTp2','confirmCandle','confirmWindow',
     'rsiLen','rsiOS','rsiLookback','revBody','sweepLen','donLen','volMult','trailMult','partialFrac',
-    'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge','useHtf','htfMult',
+    'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge','useHtf','htfMult','letRun','runFrac','useCont',
     'paperBuyPct','maxSolPerBuy','slippageBps','maxRoundTrip','wkEur','wkDays','wkStake','wkTf',
     'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq','pdTrend','pdNew','pdBig','pdWatch','pdLiq','pdHorizon','pdAuto','tgBot1','tgBot2'];
   function saveSettings(){
@@ -2379,6 +2405,14 @@
       }
     }
     results.sort((a, b) => b.rank - a.rank);
+    // stage 2: on the 30 best, also try "let profits run" and "re-enter in the trend"
+    const extra = [];
+    results.slice(0, 30).forEach(r => [[' · laten lopen', { letRun: true }], [' · herinstap', { useCont: true }], [' · laten lopen + herinstap', { letRun: true, useCont: true }]].forEach(([nm2, v]) => {
+      const r2 = evalP(Object.assign({}, r.p, v));
+      if (r2.train.n >= 6) extra.push(Object.assign(r2, { nm: r.nm + nm2, p: Object.assign({}, r.p, v), rank: Math.log(r2.train.e) / (1 + 3 * Math.abs(r2.train.dd)) }));
+    }));
+    results.push(...extra);
+    results.sort((a, b) => b.rank - a.rank);
     const cur = evalP(base);
     const bhOf = (from, to) => { const a = bars.find(b => b.time >= from), z = [...bars].reverse().find(b => b.time < to) || bars[bars.length - 1]; return a && z ? z.close / a.close - 1 : 0; };
     const bhTest = bhOf(split, Infinity);
@@ -2402,7 +2436,7 @@
     el.querySelectorAll('[data-opt]').forEach(btn => btn.addEventListener('click', () => {
       const r = top[Number(btn.dataset.opt)]; if (!r) return;
       ['emaFastLen','emaSlowLen','atrMultSL','rrTp1','rrTp2'].forEach(k => { $(k).value = r.p[k]; });
-      ['useEma','useRev','useBrk','useTrend','useHtf'].forEach(k => { $(k).checked = !!r.p[k]; });
+      ['useEma','useRev','useBrk','useTrend','useHtf','letRun','useCont'].forEach(k => { $(k).checked = !!r.p[k]; });
       saveSettings(); renderCurrentParamsOnly();
       btn.textContent = 'Toegepast ✓';
     }));
