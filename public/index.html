@@ -171,6 +171,12 @@
   #pdBody tr { cursor: pointer; }
   #pkBody tr td:first-child { width: 28px; }
   .verdict { font-weight: 700; white-space: nowrap; }
+  .botrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .botrow b { min-width: 52px; font-size: 0.8rem; }
+  .botrow a.btnlink { display: inline-block; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--border); background: var(--panel); color: var(--text); text-decoration: none; font-size: 0.78rem; }
+  .botrow a.btnlink:hover { border-color: var(--accent); }
+  a.minibot { display: inline-block; padding: 2px 7px; border-radius: 7px; border: 1px solid var(--border); color: var(--text); text-decoration: none; font-size: 0.72rem; margin-left: 4px; }
+  a.minibot:hover { border-color: var(--accent); }
   .main-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   .side { display: flex; flex-direction: column; gap: 16px; }
 
@@ -243,7 +249,7 @@
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">S</div>
-      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 04-10 (kansen)</small></div>
+      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 05-10 (bot-knoppen)</small></div>
     </div>
     <div class="search">
       <input id="tokenAddr" value="" spellcheck="false" placeholder="Plak token-adres of link (DexScreener / GMGN / pump.fun)…">
@@ -400,6 +406,17 @@
     </div>
 
     <div class="side">
+      <!-- bot control via Telegram links -->
+      <div class="card" id="botCtlCard">
+        <h2>🤖 Je Railway-bots bedienen</h2>
+        <div class="note" style="margin-bottom:8px;">Vul de Telegram-naam van je bot(s) in (zoals <code>Manu_signaal_bot</code>). Een knop opent Telegram; tik daar op <b>Start</b> en de bot voert het uit. Je bot luistert alleen naar jouw chat.</div>
+        <div class="row" style="gap:8px; margin-bottom:8px;">
+          <div class="field" style="flex:1;"><label>Bot 1</label><input id="tgBot1" placeholder="Manu_signaal_bot"></div>
+          <div class="field" style="flex:1;"><label>Bot 2 (optioneel)</label><input id="tgBot2" placeholder="naam_van_bot_2"></div>
+        </div>
+        <div id="botCtlBtns"></div>
+        <div class="note" id="botCtlNote" style="margin-top:6px;"></div>
+      </div>
       <!-- paper trading -->
       <div class="card">
         <h2>Paper trading (simulatie, geen echt geld)</h2>
@@ -1096,6 +1113,7 @@
   function setPair(pair){
     pairInfo = pair;
     if (typeof renderWatchlist === 'function') setTimeout(renderWatchlist, 0);
+    if (typeof renderBotCtl === 'function') setTimeout(renderBotCtl, 0);
     const mc = Number(pair.marketCap || pair.fdv);
     const px = Number(pair.priceUsd);
     supply = (mc > 0 && px > 0) ? mc / px : null;
@@ -2279,7 +2297,7 @@
     'rsiLen','rsiOS','rsiLookback','revBody','sweepLen','donLen','volMult','trailMult','partialFrac',
     'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge','useHtf','htfMult',
     'paperBuyPct','maxSolPerBuy','slippageBps','maxRoundTrip','wkEur','wkDays','wkStake','wkTf',
-    'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq','pdTrend','pdNew','pdBig','pdWatch','pdLiq','pdHorizon','pdAuto'];
+    'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq','pdTrend','pdNew','pdBig','pdWatch','pdLiq','pdHorizon','pdAuto','tgBot1','tgBot2'];
   function saveSettings(){
     const o = {};
     SETTING_IDS.forEach(id => { const el = $(id); if (el) o[id] = el.type === 'checkbox' ? el.checked : el.value; });
@@ -2561,7 +2579,7 @@
         : r.verdict === 'bad' ? '<span class="verdict down">❌ Niet</span>' : '<span class="note">bezig…</span>';
       const f = e => e == null ? '' : '<span class="' + (e >= 1 ? 'up' : 'down') + '">' + pct(e - 1) + '</span>';
       return '<tr><td><input type="checkbox" class="pk-sel" data-addr="' + esc(r.token) + '"' + (r.sel ? ' checked' : '') + (r.verdict ? '' : ' disabled') + '></td>'
-        + '<td><b>' + esc(r.sym || '?') + '</b><div class="note" style="margin:0;">' + (r.mcap ? 'MCap ' + fmtUsd(r.mcap) : '') + '</div></td>'
+        + '<td><b>' + esc(r.sym || '?') + '</b>' + botAddLinks(r.token) + '<div class="note" style="margin:0;">' + (r.mcap ? 'MCap ' + fmtUsd(r.mcap) : '') + '</div></td>'
         + '<td>' + v + '</td><td>' + f(r.testE) + (r.testN != null ? ' <span class="note">(' + r.testN + ' trades)</span>' : '') + (r.bhTest != null ? '<div class="note" style="margin:0;">vasthouden ' + pct(r.bhTest) + '</div>' : '') + '</td>'
         + '<td>' + f(r.fullE) + '</td><td>' + (r.n != null ? r.n : '') + '</td><td>' + (r.pf != null ? (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') : '') + '</td>'
         + '<td>' + (r.cost != null ? r.cost.toFixed(1) + '%' : '') + '</td><td>' + (r.liq ? fmtUsd(r.liq) : '') + '</td>'
@@ -2763,7 +2781,7 @@
     $('pdStats').innerHTML = pdStatsHtml();
     $('pdTable').style.display = pdRows.length ? '' : 'none';
     const f = v => Number.isFinite(v) ? '<span class="' + (v > 0 ? 'up' : v < 0 ? 'down' : '') + '">' + (v > 0 ? '+' : '') + v.toFixed(1) + '%</span>' : '–';
-    $('pdBody').innerHTML = pdRows.map(r => '<tr data-addr="' + esc(r.token) + '"><td><b>' + esc(r.sym) + '</b><div class="note" style="margin:0;">' + (r.mcap ? 'MCap ' + fmtUsd(r.mcap) : '') + '</div></td>'
+    $('pdBody').innerHTML = pdRows.map(r => '<tr data-addr="' + esc(r.token) + '"><td><b>' + esc(r.sym) + '</b>' + botAddLinks(r.token) + '<div class="note" style="margin:0;">' + (r.mcap ? 'MCap ' + fmtUsd(r.mcap) : '') + '</div></td>'
       + '<td><b class="' + (r.s >= 0.55 ? 'up' : r.s < 0.4 ? 'down' : '') + '">' + Math.round(r.s * 100) + '%</b></td><td class="note" style="margin:0; max-width:300px;">' + esc(r.why || '') + '</td>'
       + '<td>' + f(r.m5) + '</td><td>' + f(r.h1) + '</td><td>' + f(r.h24) + '</td><td>' + (r.v1 ? fmtUsd(r.v1) : '–') + '</td><td>' + (r.buys != null ? Math.round(r.buys * 100) + '%' : '–') + '</td><td>' + fmtUsd(r.liq) + '</td></tr>').join('');
   }
@@ -2838,11 +2856,39 @@
   $('pdHorizon').addEventListener('change', () => { $('pdHorizonTxt').textContent = $('pdHorizon').selectedOptions[0].text; });
   $('pdReset').addEventListener('click', () => { if (window.confirm('Alles wat de Kansen-pagina geleerd heeft wissen?')){ localStorage.removeItem(PD_KEY); pdLoad(); pdRows = []; pdRender(); } });
   $('pdBody').addEventListener('click', e => {
+    if (e.target.closest('a.minibot')) return;   // the bot button opens Telegram, not the chart
     const tr = e.target.closest('tr[data-addr]'); if (!tr) return;
     setPredMode(false); $('tokenAddr').value = tr.dataset.addr; loadLive(); window.scrollTo({ top: 0, behavior: 'smooth' });
   });
   pdSetupAuto();
   if (location.hash === '#kansen') setPredMode(true);
+
+  // ---------- bot control: Telegram deep links (/start <payload>) ----------
+  function tgName(v){ return String(v || '').trim().replace(/^@/, '').replace(/^https?:\/\/t\.me\//i, '').replace(/[/?].*$/, ''); }
+  function botNames(){ return [tgName($('tgBot1').value), tgName($('tgBot2').value)].map((n, i) => ({ n, i: i + 1 })).filter(b => /^[A-Za-z0-9_]{5,32}$/.test(b.n)); }
+  const tgLink = (bot, payload) => 'https://t.me/' + bot + '?start=' + encodeURIComponent(payload);
+  function botAddLinks(addr){
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr || '')) return '';
+    return botNames().map(b => '<a class="minibot" target="_blank" rel="noopener" href="' + tgLink(b.n, 'add_' + addr) + '" title="Voeg toe aan bot ' + b.i + ' (' + esc(b.n) + ')">➕ bot ' + b.i + '</a>').join('');
+  }
+  function renderBotCtl(){
+    const bots = botNames();
+    const cur = currentTokenAddr && currentTokenAddr();
+    const curOk = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cur || '');
+    const sym = pairInfo && pairInfo.baseToken ? pairInfo.baseToken.symbol : (cur ? cur.slice(0, 4) + '…' : '');
+    $('botCtlBtns').innerHTML = bots.map(b => '<div class="botrow"><b>Bot ' + b.i + '</b>'
+      + (curOk ? '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'add_' + cur) + '">➕ ' + esc(sym) + ' naar bot</a>'
+               + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'del_' + cur) + '">➖ weghalen</a>' : '')
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'hervat') + '">▶️ Bot aan</a>'
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'stop') + '">⏸️ Bot uit</a>'
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'status') + '">📋 Status</a>'
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'coinlijst') + '">📃 Coins</a></div>').join('');
+    $('botCtlNote').innerHTML = bots.length
+      ? '"Bot uit" = geen nieuwe buys (verkopen gaan door). "Bot aan" werkt alleen als <code>ENABLE_LIVE_TRADES=1</code> in Railway staat — dat blijft de hoofdschakelaar. Een coin toevoegen controleert eerst of hij genoeg liquiditeit heeft.'
+      : 'Vul hierboven de naam van je bot in om de knoppen te zien.';
+  }
+  setTimeout(renderBotCtl, 0);
+  ['tgBot1', 'tgBot2'].forEach(id => { $(id).addEventListener('input', () => { renderBotCtl(); if (typeof pkRender === 'function' && pkRows.length) pkRender(); if (typeof pdRender === 'function' && pdRows.length) pdRender(); }); $(id).addEventListener('change', saveSettings); });
 
   // ---------- events ----------
   $('loadBtn').addEventListener('click', loadLive);
