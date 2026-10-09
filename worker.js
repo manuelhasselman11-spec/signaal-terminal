@@ -24,10 +24,13 @@
  *            KANSEN_MIN (0.45) = minimale kans-score voor een buy als het filter actief is,
  *            LET_RUN (0), RUN_FRAC (0.5) = bij TP2 maar een deel verkopen, de rest met trailing stop laten doorlopen,
  *            USE_CONT (0), CONT_BARS (30) = na een winnende verkoop opnieuw kopen als de trend doorzet (auto-tune kiest dit per coin),
+ *            SMART_POLL (1) = kijk vlak na het sluiten van elke candle (+ een tweede keer voor late data) i.p.v. elke POLL_MS,
+ *            TP_WATCH (1) = verkoop TP1/TP2 direct zodra de live prijs het doel raakt (net als de stop-wachter),
  *            MAX_COINS (6) = max. aantal coins dat je via Telegram/terminal kunt toevoegen (bovenop TOKEN_ADDRESS niet meer dan dit totaal).
  *            plus de strategie-instellingen (EMA_FAST, EMA_SLOW, ATR_MULT_SL, RR_TP1, RR_TP2, …).
  */
 const live = require('./liveTrade');
+const { createCopy } = require('./copyTrade');
 const TOKEN_LIST = (process.env.TOKEN_ADDRESS || '')
   .split(/[,;\s]+/)
   .map(s => s.trim())
@@ -263,7 +266,7 @@ function runEngine(bars, p) {
       }
     }
   }
-  return { events, inPos, entry, stop, tp1, tp2, src, last: bars[n - 1] };
+  return { events, inPos, entry, stop, tp1, tp2, tp1Hit, tp2Hit, src, last: bars[n - 1] };
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -382,7 +385,7 @@ async function tickOne(token) {
   const c = coin(token);
   if (!c.ctx) {
     c.ctx = await fetchBestPair(token);
-    await notify('Watch · ' + infoOf(c, token).symbol + ' · ' + TIMEFRAME);
+    if (!c.announced){ c.announced = true; await notify('Watch · ' + infoOf(c, token).symbol + ' · ' + TIMEFRAME); }
   }
   const bars = await fetchOHLCV(c.ctx.network, c.ctx.poolAddress, unit, agg, token);
   if (bars.length < 60) {
@@ -395,7 +398,7 @@ async function tickOne(token) {
     await notify('🧠 ' + infoOf(c, token).symbol + ': nieuwe instellingen actief');
   }
   const res = runEngine(bars, paramsFor(c));
-  c.engine = { inPos: res.inPos, stop: res.stop, entry: res.entry, time: Date.now() };
+  c.engine = { inPos: res.inPos, stop: res.stop, entry: res.entry, tp1: res.tp1, tp2: res.tp2, tp1Hit: res.tp1Hit, tp2Hit: res.tp2Hit, time: Date.now() };
   const tag = infoOf(c, token).symbol;
   const formingTime = bars[bars.length - 1].time;
   // Only candles that were still forming at the previous tick (or newer) can hold new signals. Older candles were
@@ -458,6 +461,7 @@ async function syncOne(token, c){
 }
 
 // Stop-watch: between candle refreshes, check the live price every few seconds against the strategy's stop.
+const TP_WATCH = flag('TP_WATCH', true);
 async function stopWatchTick(){
   if (!live.liveEnabled() || !STOPWATCH_MS) return;
   const open = activeTokens().filter(t => { const c = coins.get(t); return c && c.engine && c.engine.inPos && c.engine.stop > 0 && live.isOpen(t); });
@@ -470,7 +474,30 @@ async function stopWatchTick(){
     const pairs = ((data && data.pairs) || []).filter(p => p.baseToken && p.baseToken.address === token)
       .sort((a, b) => ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0));
     const price = pairs.length ? Number(pairs[0].priceUsd) : NaN;
-    if (!(price > 0) || price > c.engine.stop) continue;
+    if (!(price > 0)) continue;
+    // profit targets: take them the moment the live price gets there, don't wait for the candle to close
+    if (TP_WATCH && price > c.engine.stop){
+      const e = c.engine, p = paramsFor(c);
+      if (e.tp2 > 0 && price >= e.tp2 && !e.tp2Hit && Date.now() - (c.lastTpFire || 0) > 30000){
+        c.lastTpFire = Date.now();
+        e.tp2Hit = true; e.tp1Hit = true;
+        const ev = p.letRun ? { type: 'TP2', price, frac: p.runFrac } : { type: 'TP2', price };
+        await notify('🎯 Winst-wachter ' + infoOf(c, token).symbol + ': prijs $' + fmtPrice(price) + ' raakte TP2 $' + fmtPrice(e.tp2) + ' — ' + (p.letRun ? Math.round(p.runFrac * 100) + '% verkopen, rest loopt door' : 'alles verkopen'));
+        const pre = e.tp1 > 0 && !live.tp1Taken(token) ? [{ type: 'TP1', price }] : [];
+        await live.handleLiveEvents(pre.concat([ev]), token, infoOf(c, token));
+        if (p.letRun) e.stop = Math.max(e.stop, e.tp1);
+        continue;
+      }
+      if (e.tp1 > 0 && price >= e.tp1 && !e.tp1Hit && Date.now() - (c.lastTpFire || 0) > 30000){
+        c.lastTpFire = Date.now();
+        e.tp1Hit = true;
+        await notify('🎯 Winst-wachter ' + infoOf(c, token).symbol + ': prijs $' + fmtPrice(price) + ' raakte TP1 $' + fmtPrice(e.tp1) + ' — deel verkopen');
+        await live.handleLiveEvents([{ type: 'TP1', price }], token, infoOf(c, token));
+        if (p.beAfterTp1) e.stop = Math.max(e.stop, e.entry);   // same rule as the strategy: stop to break-even after TP1
+        continue;
+      }
+    }
+    if (price > c.engine.stop) continue;
     if (Date.now() - c.lastWatchFire < 30000) continue;
     c.lastWatchFire = Date.now();
     await notify('🛑 Stop-wachter ' + infoOf(c, token).symbol + ': prijs $' + fmtPrice(price) + ' onder stop $' + fmtPrice(c.engine.stop) + ' — direct verkopen');
@@ -714,11 +741,22 @@ live.setJournal(t => {
   }
   saveState();
 });
+// ---------- wallets volgen (copy-trading): see copyTrade.js ----------
+const copy = createCopy({
+  notify: m => notify(m),
+  live: {
+    enabled: () => live.liveEnabled(),
+    isOpen: m => live.isOpen(m),
+    canBuy: m => !manualStop && !activeTokens().includes(m),
+    buy: (m, i) => live.handleLiveEvents([{ type: 'BUY' }], m, { symbol: i.symbol, liquidityUsd: i.liquidityUsd, stakeMult: Math.min(1, (i.copySol || 0) / (Number(process.env.TRADE_AMOUNT_SOL) || 0.01)) }),
+    sell: (m, i) => live.handleLiveEvents([{ type: 'EXIT' }], m, { symbol: i.symbol, liquidityUsd: i.liquidityUsd }),
+  },
+});
 function saveState(){
   if (!STATE_FILE) return;
   try {
     const o = { v: 1, savedAt: Date.now(), manualStop, autoTokens, addedTokens, removedTokens, lossBaseline, journal: journal.slice(-500), live: live.exportState(), lastReportDay, coins: {},
-      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) } };
+      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) }, copy: copy.exportState() };
     coins.forEach((c, t) => { o.coins[t] = { params: c.params, pendingParams: c.pendingParams, paused: c.paused, tunedAt: c.tunedAt, livePauseUntil: c.livePauseUntil || 0, livePauseAfter: c.livePauseAfter || 0 }; });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(o));
@@ -735,6 +773,7 @@ function loadState(){
     lastReportDay = o.lastReportDay || '';
     Object.entries(o.coins || {}).forEach(([t, v]) => { const c = coin(t); c.params = v.params || null; c.pendingParams = v.pendingParams || null; c.paused = !!v.paused; c.tunedAt = v.tunedAt || 0; c.livePauseUntil = Number(v.livePauseUntil) || 0; c.livePauseAfter = Number(v.livePauseAfter) || 0; });
     live.importState(o.live);
+    copy.importState(o.copy);
     if (o.kansen && Array.isArray(o.kansen.w) && o.kansen.w.length === KS_PRIOR.length)
       ks = { w: o.kansen.w, b: Number(o.kansen.b) || 0, pending: o.kansen.pending || [], done: o.kansen.done || [] };
     return true;
@@ -915,6 +954,7 @@ function statusText(){
   }
   lines.push('Auto-tune: ' + (TUNE_ON ? (TUNE_APPLY ? 'aan' : 'alleen voorstellen') : 'uit') + ' · stop-wachter: ' + (STOPWATCH_MS ? 'aan' : 'uit')
     + (KANSEN ? ' · kansen: ' + ksStats().n + ' uitkomsten' + (ksFilterActive() ? ' (filter AAN)' : ' (leert, filter nog uit)') : ''));
+  if (copy.state.wallets.length) lines.push('🐋 Wallets volgen: ' + copy.state.wallets.length + ' · stand ' + copy.cfg.mode + ' (meer: /wallets)');
   return lines.join('\n');
 }
 async function tgSend(text){
@@ -931,10 +971,12 @@ async function handleCommand(text){
   if (cmd === '/start' && rawArg){
     const m = rawArg.match(/^(add|del)_([1-9A-HJ-NP-Za-km-z]{32,44})$/);
     if (m){ cmd = m[1] === 'add' ? '/coin' : '/weg'; rawArg = m[2]; }
-    else if (/^(stop|hervat|status|rapport|kansen|coinlijst)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
+    else if (/^(volg|ontvolg)_([1-9A-HJ-NP-Za-km-z]{32,44})$/.test(rawArg)){ const v = rawArg.split('_'); cmd = '/' + v[0]; rawArg = v[1]; }
+    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
   }
   const arg = rawArg.toUpperCase();
   if (cmd === '/coin' || cmd === '/weg' || cmd === '/coinlijst') return coinCommand(cmd, rawArg.trim());
+  if (cmd === '/volg' || cmd === '/ontvolg' || cmd === '/wallets'){ const answer = await copy.command(cmd, rawArg); if (cmd !== '/wallets') saveState(); return tgSend(answer); }
   if (cmd === '/status') return tgSend(statusText());
   if (cmd === '/rapport') return tgSend(reportText());
   if (cmd === '/kansen') return tgSend(KANSEN ? ksText() : 'Kansen staat uit (KANSEN=0).');
@@ -966,7 +1008,7 @@ async function handleCommand(text){
   }
   if (cmd === '/start') return tgSend(statusText() + '\n\nStuur /help voor de commando\'s.');
   if (cmd.startsWith('/'))
-    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/help — deze lijst');
+    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/help — deze lijst');
 }
 const MAX_COINS = Math.max(1, Math.floor(num('MAX_COINS', 6)));
 async function coinCommand(cmd, addr){
@@ -1032,12 +1074,13 @@ async function dailyReport(){
   if (n.hour !== REPORT_HOUR || lastReportDay === n.day) return;
   lastReportDay = n.day;
   saveState();
-  await tgSend('📊 Dagrapport ' + n.day + '\n' + statusText() + '\n\n' + reportText() + (KANSEN ? '\n\n' + ksText() : ''));
+  await tgSend('📊 Dagrapport ' + n.day + '\n' + statusText() + '\n\n' + reportText() + (KANSEN ? '\n\n' + ksText() : '') + (copy.state.wallets.length ? '\n\n' + copy.walletsText() : ''));
 }
 
 async function tick() {
   const list = activeTokens();
   if (!list.length){
+    if (copy.state.wallets.length){ console.log('geen coins — de bot volgt alleen wallets'); return; }
     if (!AUTO_COINS) throw new Error('Geen coins: zet TOKEN_ADDRESS in Railway, voeg een coin toe vanuit de terminal (➕ Naar bot) of zet AUTO_COINS=3');
     console.log('nog geen coins gekozen — wacht op de coin-keuze');
     return;
@@ -1049,7 +1092,7 @@ async function tick() {
       c.errCount = 0;
     } catch (err) {
       console.error('tick fout', token.slice(0, 6), err.message);
-      c.ctx = null;
+      if (!/geckoterminal/i.test(err.message)) c.ctx = null;   // GeckoTerminal busy: keep the pool, just try again next round
       c.errCount = (c.errCount || 0) + 1;
       if (c.errCount === 5) await notify('⚠️ ' + token.slice(0, 6) + ': al 5 keer achter elkaar een fout (' + err.message.slice(0, 80) + '). De bot probeert het gewoon verder; blijft dit, kijk dan in de Railway-logs.');
     }
@@ -1057,14 +1100,30 @@ async function tick() {
   }
 }
 
+const SMART_POLL = flag('SMART_POLL', true);
+function tfSeconds(){ const [u, a] = TIMEFRAME.split(':'); return ({ second: 1, minute: 60, hour: 3600, day: 86400 }[u] || 60) * (Number(a) || 1); }
+// ms until the next useful moment: 25 s after a candle closes, and again 90 s after (data can arrive late); at most every POLL_MS-ish when candles are short
+function nextTickDelay(nowMs){
+  const tf = tfSeconds() * 1000;
+  if (!SMART_POLL || tf <= 60000) return POLL_MS;
+  const sinceClose = nowMs % tf;
+  const marks = [25000, 90000, tf + 25000];
+  const next = marks.find(m => m > sinceClose + 500);
+  return Math.max(5000, next - sinceClose);
+}
 async function loop() {
   try { await tick(); } catch (err) { console.error('tick fout', err.message); }
-  setTimeout(loop, POLL_MS);
+  setTimeout(loop, nextTickDelay(Date.now()));
 }
 
 async function start(){
   const restored = loadState();
+  if (!AUTO_COINS && autoTokens.length){
+    console.log('AUTO_COINS staat uit: eerder zelf gekozen coins vergeten:', autoTokens.map(t => t.slice(0, 6)).join(','));
+    autoTokens = []; saveState();
+  }
   console.log(STATE_FILE ? (restored ? 'Geheugen geladen uit ' + STATE_FILE : 'Geheugen: nieuw bestand ' + STATE_FILE) : 'Geheugen: UIT (geen Railway Volume) — /stop, gekozen coins en instellingen worden vergeten bij een herstart');
+  console.log('Kijkmoment:', SMART_POLL && tfSeconds() > 60 ? 'vlak na elke ' + TIMEFRAME + '-candle (+ tweede blik na 90 s)' : 'elke ' + POLL_MS / 1000 + ' s', '· winst-wachter:', TP_WATCH ? 'aan' : 'uit');
   console.log('Signaal worker start. Tokens=', TOKEN_LIST.length ? TOKEN_LIST.length : '(LEEG)', TOKEN_LIST.map(t => t.slice(0, 6)).join(','), 'tf=', TIMEFRAME, 'poll=', POLL_MS + 'ms', 'stop-wachter=', STOPWATCH_MS ? STOPWATCH_MS + 'ms' : 'uit');
   try { await notify(await live.startupReport()); } catch (e){ console.error('LIVE start-fout:', e.message); }
   loop();
@@ -1081,6 +1140,13 @@ async function start(){
     })();
   }
   setInterval(() => { dailyReport().catch(() => {}); }, 60000);
+  console.log('Wallets volgen:', copy.state.wallets.length ? copy.state.wallets.length + ' wallet(s) · stand ' + copy.cfg.mode + ' · elke ' + copy.cfg.pollMs / 1000 + ' s' : 'nog geen (stuur /volg <adres> in Telegram of zet COPY_WALLETS)');
+  (async function copyLoop(){
+    for (;;){
+      try { await copy.tick(); } catch (e){ console.error('kopieer fout', e.message); }
+      await sleep(copy.cfg.pollMs);
+    }
+  })();
   setInterval(saveState, 60000);
   if (KANSEN){
     console.log('Kansen AAN: elke', KANSEN_EVERY / 60000, 'min scoren · controle na', KANSEN_H / 60000, 'min · filter:', KANSEN_FILTER, '(' + ksStats().n + ' uitkomsten in geheugen)');
@@ -1102,6 +1168,6 @@ async function start(){
 }
 
 if (require.main === module) start();
-module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
+module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
   pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
-  ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
+  copy, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
