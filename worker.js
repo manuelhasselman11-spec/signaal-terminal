@@ -31,6 +31,9 @@
  */
 const live = require('./liveTrade');
 const { createCopy } = require('./copyTrade');
+const { createCloud } = require('./cloudMemory');
+const cloud = createCloud();
+const buyMeta = new Map();   // mint -> { kind, source, liq, buyTime }: what we knew when buying, for the cloud memory
 const TOKEN_LIST = (process.env.TOKEN_ADDRESS || '')
   .split(/[,;\s]+/)
   .map(s => s.trim())
@@ -443,6 +446,13 @@ async function tickOne(token) {
       todo = todo.filter(e => e.type !== 'BUY');
     }
     if (todo.some(e => e.type === 'BUY') && !(await ksAllowBuy(token, tag))) todo = todo.filter(e => e.type !== 'BUY');
+    const buyEv = todo.find(e => e.type === 'BUY');
+    if (buyEv && !live.isOpen(token)){
+      const meta = { kind: 'strategie', source: buyEv.src || 'EMA', liq: infoOf(c, token).liquidityUsd, buyTime: Date.now() };
+      const ok = await cloud.check({ kind: 'strategie', mint: token, source: meta.source, liq: meta.liq }, notify);
+      if (!ok.ok){ await notify('🧠 ' + tag + ': BUY overgeslagen door het cloud-geheugen — ' + ok.reason + '. (Zo leert de bot van fouten; /geheugen voor alle lessen)'); todo = todo.filter(e => e.type !== 'BUY'); }
+      else buyMeta.set(token, meta);
+    }
     if (todo.length) await live.handleLiveEvents(todo, token, infoOf(c, token));
     await syncOne(token, c);
   }
@@ -730,6 +740,9 @@ function stakeMult(){
 }
 live.setJournal(t => {
   journal.push(t);
+  const meta = buyMeta.get(t.mint) || {};
+  buyMeta.delete(t.mint);
+  cloud.record(Object.assign({ kind: 'strategie' }, t, meta), notify).catch(() => {});
   const ll = liveLearn(t.mint);
   if (ll) notify('📉 ' + (t.symbol || t.mint.slice(0, 6)) + ': de laatste ' + ll.n + ' echte trades kostten samen ' + ll.net.toFixed(4) + ' SOL (' + ll.losses + ' verliezen). Pauze voor nieuwe buys: ' + LIVE_PAUSE_H + ' uur. Verkopen gaan door.');
   if (STAKE_ADAPT && stakeMult() < 1 && t.pnlSol <= 0) console.log('verliesreeks: volgende inzet tijdelijk de helft');
@@ -747,16 +760,22 @@ const copy = createCopy({
   live: {
     enabled: () => live.liveEnabled(),
     isOpen: m => live.isOpen(m),
-    canBuy: m => !manualStop && !activeTokens().includes(m),
-    buy: (m, i) => live.handleLiveEvents([{ type: 'BUY' }], m, { symbol: i.symbol, liquidityUsd: i.liquidityUsd, stakeMult: Math.min(1, (i.copySol || 0) / (Number(process.env.TRADE_AMOUNT_SOL) || 0.01)) }),
+    canBuy: async (m, wallet, sym) => {
+      if (manualStop || activeTokens().includes(m)) return false;
+      const ok = await cloud.check({ kind: 'kopie', mint: m, source: wallet }, notify);
+      if (!ok.ok){ await notify('🧠 ' + (sym || m.slice(0, 6)) + ': niet meegekocht door het cloud-geheugen — ' + ok.reason); return false; }
+      return true;
+    },
+    buy: (m, i) => { buyMeta.set(m, { kind: 'kopie', source: i.wallet, liq: i.liquidityUsd, buyTime: Date.now() }); return live.handleLiveEvents([{ type: 'BUY' }], m, { symbol: i.symbol, liquidityUsd: i.liquidityUsd, stakeMult: Math.min(1, (i.copySol || 0) / (Number(process.env.TRADE_AMOUNT_SOL) || 0.01)) }); },
     sell: (m, i) => live.handleLiveEvents([{ type: 'EXIT' }], m, { symbol: i.symbol, liquidityUsd: i.liquidityUsd }),
   },
+  onPaperClose: t => { cloud.record(t, notify).catch(() => {}); },
 });
 function saveState(){
   if (!STATE_FILE) return;
   try {
     const o = { v: 1, savedAt: Date.now(), manualStop, autoTokens, addedTokens, removedTokens, lossBaseline, journal: journal.slice(-500), live: live.exportState(), lastReportDay, coins: {},
-      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) }, copy: copy.exportState() };
+      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) }, copy: copy.exportState(), buyMeta: Object.fromEntries(buyMeta) };
     coins.forEach((c, t) => { o.coins[t] = { params: c.params, pendingParams: c.pendingParams, paused: c.paused, tunedAt: c.tunedAt, livePauseUntil: c.livePauseUntil || 0, livePauseAfter: c.livePauseAfter || 0 }; });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(o));
@@ -774,6 +793,7 @@ function loadState(){
     Object.entries(o.coins || {}).forEach(([t, v]) => { const c = coin(t); c.params = v.params || null; c.pendingParams = v.pendingParams || null; c.paused = !!v.paused; c.tunedAt = v.tunedAt || 0; c.livePauseUntil = Number(v.livePauseUntil) || 0; c.livePauseAfter = Number(v.livePauseAfter) || 0; });
     live.importState(o.live);
     copy.importState(o.copy);
+    Object.entries(o.buyMeta || {}).forEach(([k, v]) => buyMeta.set(k, v));
     if (o.kansen && Array.isArray(o.kansen.w) && o.kansen.w.length === KS_PRIOR.length)
       ks = { w: o.kansen.w, b: Number(o.kansen.b) || 0, pending: o.kansen.pending || [], done: o.kansen.done || [] };
     return true;
@@ -954,6 +974,7 @@ function statusText(){
   }
   lines.push('Auto-tune: ' + (TUNE_ON ? (TUNE_APPLY ? 'aan' : 'alleen voorstellen') : 'uit') + ' · stop-wachter: ' + (STOPWATCH_MS ? 'aan' : 'uit')
     + (KANSEN ? ' · kansen: ' + ksStats().n + ' uitkomsten' + (ksFilterActive() ? ' (filter AAN)' : ' (leert, filter nog uit)') : ''));
+  lines.push(cloud.cfg.on ? '☁️ Cloud-geheugen AAN (' + cloud.cfg.bot + ')' + (cloud.stats.blocked ? ' · ' + cloud.stats.blocked + ' buy(s) tegengehouden' : '') + (cloud.stats.errors ? ' · ⚠️ ' + cloud.stats.errors + ' fout(en)' : '') : '☁️ Cloud-geheugen uit');
   if (copy.state.wallets.length) lines.push('🐋 Wallets volgen: ' + copy.state.wallets.length + ' · stand ' + copy.cfg.mode + ' (meer: /wallets)');
   return lines.join('\n');
 }
@@ -972,11 +993,12 @@ async function handleCommand(text){
     const m = rawArg.match(/^(add|del)_([1-9A-HJ-NP-Za-km-z]{32,44})$/);
     if (m){ cmd = m[1] === 'add' ? '/coin' : '/weg'; rawArg = m[2]; }
     else if (/^(volg|ontvolg)_([1-9A-HJ-NP-Za-km-z]{32,44})$/.test(rawArg)){ const v = rawArg.split('_'); cmd = '/' + v[0]; rawArg = v[1]; }
-    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
+    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets|geheugen)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
   }
   const arg = rawArg.toUpperCase();
   if (cmd === '/coin' || cmd === '/weg' || cmd === '/coinlijst') return coinCommand(cmd, rawArg.trim());
   if (cmd === '/volg' || cmd === '/ontvolg' || cmd === '/wallets'){ const answer = await copy.command(cmd, rawArg); if (cmd !== '/wallets') saveState(); return tgSend(answer); }
+  if (cmd === '/geheugen') return tgSend(await cloud.text());
   if (cmd === '/status') return tgSend(statusText());
   if (cmd === '/rapport') return tgSend(reportText());
   if (cmd === '/kansen') return tgSend(KANSEN ? ksText() : 'Kansen staat uit (KANSEN=0).');
@@ -1008,7 +1030,7 @@ async function handleCommand(text){
   }
   if (cmd === '/start') return tgSend(statusText() + '\n\nStuur /help voor de commando\'s.');
   if (cmd.startsWith('/'))
-    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/help — deze lijst');
+    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/help — deze lijst');
 }
 const MAX_COINS = Math.max(1, Math.floor(num('MAX_COINS', 6)));
 async function coinCommand(cmd, addr){
@@ -1074,6 +1096,8 @@ async function dailyReport(){
   if (n.hour !== REPORT_HOUR || lastReportDay === n.day) return;
   lastReportDay = n.day;
   saveState();
+  const wiped = await cloud.cleanup(notify);
+  if (wiped) console.log('cloud-geheugen:', wiped, 'oude verliezende trades gewist (lessen blijven)');
   await tgSend('📊 Dagrapport ' + n.day + '\n' + statusText() + '\n\n' + reportText() + (KANSEN ? '\n\n' + ksText() : '') + (copy.state.wallets.length ? '\n\n' + copy.walletsText() : ''));
 }
 
@@ -1126,6 +1150,12 @@ async function start(){
   console.log('Kijkmoment:', SMART_POLL && tfSeconds() > 60 ? 'vlak na elke ' + TIMEFRAME + '-candle (+ tweede blik na 90 s)' : 'elke ' + POLL_MS / 1000 + ' s', '· winst-wachter:', TP_WATCH ? 'aan' : 'uit');
   console.log('Signaal worker start. Tokens=', TOKEN_LIST.length ? TOKEN_LIST.length : '(LEEG)', TOKEN_LIST.map(t => t.slice(0, 6)).join(','), 'tf=', TIMEFRAME, 'poll=', POLL_MS + 'ms', 'stop-wachter=', STOPWATCH_MS ? STOPWATCH_MS + 'ms' : 'uit');
   try { await notify(await live.startupReport()); } catch (e){ console.error('LIVE start-fout:', e.message); }
+  if (cloud.cfg.on){
+    try { await cloud.refresh(true); console.log('Cloud-geheugen AAN:', cloud.lessons.size, 'lessen geladen · bot-naam', cloud.cfg.bot, '· blokkeren:', cloud.cfg.learn ? 'aan' : 'uit'); }
+    catch (e){ console.error('cloud-geheugen:', e.message); notify('⚠️ Cloud-geheugen (Supabase) werkt nog niet: ' + e.message.slice(0, 200)); }
+  } else console.log('Cloud-geheugen: uit (zet SUPABASE_URL en SUPABASE_KEY om het aan te zetten)');
+  // keeps the lessons fresh, and keeps a free Supabase project awake (it pauses after a week without activity)
+  if (cloud.cfg.on) setInterval(() => { cloud.refresh(true).catch(e => console.error('cloud-geheugen:', e.message)); }, 6 * 3600 * 1000);
   loop();
   if (STOPWATCH_MS) setInterval(() => { stopWatchTick().catch(e => console.error('stop-wachter fout', e.message)); }, STOPWATCH_MS);
   if (TG_CMDS){
@@ -1170,4 +1200,4 @@ async function start(){
 if (require.main === module) start();
 module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
   pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
-  copy, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
+  copy, cloud, buyMeta, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };

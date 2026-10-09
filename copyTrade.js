@@ -124,9 +124,9 @@ function createCopy(o = {}){
         if (!trusted(w)){ await notify('ℹ️ Niet echt meegekocht: ' + nameOf(w) + ' heeft nog maar ' + w.n + ' nep-trades (' + (w.pnlSol >= 0 ? '+' : '') + w.pnlSol.toFixed(3) + ' SOL). Pas na ' + cfg.liveMinTrades + ' trades met winst koopt de bot echt mee.'); return; }
         if (st.live[e.mint]) return;
         if (Object.keys(st.live).length >= cfg.maxOpen){ await notify('ℹ️ Niet echt meegekocht: al ' + cfg.maxOpen + ' kopieer-posities open (COPY_MAX_OPEN).'); return; }
-        if (live.canBuy && !live.canBuy(e.mint)){ console.log('kopieer: kopen nu niet toegestaan (stop / limiet / coin al in gebruik)'); return; }
+        if (live.canBuy && !(await live.canBuy(e.mint, w.addr, sym))){ console.log('kopieer: kopen nu niet toegestaan (stop / limiet / coin al in gebruik / cloud-geheugen)'); return; }
         st.live[e.mint] = { wallet: w.addr, entry: pi.price || 0, time: now(), symbol: sym };
-        try { await live.buy(e.mint, { symbol: sym, liquidityUsd: pi.liq || 0, copySol: cfg.copySol }); }
+        try { await live.buy(e.mint, { symbol: sym, liquidityUsd: pi.liq || 0, copySol: cfg.copySol, wallet: w.addr }); }
         catch (err){ await notify('⚠️ Meekopen ' + sym + ' mislukt: ' + err.message); }
         if (!live.isOpen(e.mint)) delete st.live[e.mint];
       }
@@ -149,6 +149,7 @@ function createCopy(o = {}){
     if (w){ w.n++; if (pct > 0) w.wins++; w.pnlPct += pct; w.pnlSol += sol; }
     st.closed.push({ wallet: p.wallet, mint: p.mint, symbol: p.symbol, pct, sol, why, time: now(), held: now() - p.time });
     if (st.closed.length > 500) st.closed = st.closed.slice(-500);
+    if (o.onPaperClose){ try { o.onPaperClose({ kind: 'nep-kopie', mint: p.mint, symbol: p.symbol, source: p.wallet, spentSol: p.sol, pnlSol: sol, pnlPct: pct, exit: why, buyTime: p.time }); } catch (_){} }
     notify('📝 Nep-trade ' + p.symbol + ' (' + nameOf(w) + ') gesloten: ' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '% ≈ ' + (sol >= 0 ? '+' : '') + sol.toFixed(4) + ' SOL · ' + why);
   }
   async function sellLive(mint, pi, why){
