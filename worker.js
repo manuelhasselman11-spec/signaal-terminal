@@ -32,6 +32,7 @@
 const live = require('./liveTrade');
 const { createCopy } = require('./copyTrade');
 const { createCloud } = require('./cloudMemory');
+const { createScout } = require('./paperScout');
 const cloud = createCloud();
 const buyMeta = new Map();   // mint -> { kind, source, liq, buyTime }: what we knew when buying, for the cloud memory
 const TOKEN_LIST = (process.env.TOKEN_ADDRESS || '')
@@ -771,11 +772,28 @@ const copy = createCopy({
   },
   onPaperClose: t => { cloud.record(t, notify).catch(() => {}); },
 });
+// ---------- oefen-modus: strategy with fake money on coins you don't hold, real charts, results → cloud memory ----------
+const STABLE_MINTS = ['So11111111111111111111111111111111111111112', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'];
+async function scoutCandidates(){
+  const json = await fetchJson('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?include=base_token&page=1', 12000, 1);
+  const mints = [...new Set(((json && json.data) || []).map(d => {
+    const id = d.relationships && d.relationships.base_token && d.relationships.base_token.data && d.relationships.base_token.data.id;
+    return id ? id.replace(/^solana_/, '') : null;
+  }).filter(m => m && !STABLE_MINTS.includes(m)))];
+  const pairs = await dexPairs(mints.slice(0, 30));
+  return Object.values(pairs).map(pr => ({ mint: pr.baseToken.address, symbol: pr.baseToken.symbol, liq: (pr.liquidity && pr.liquidity.usd) || 0, vol: (pr.volume && pr.volume.h1) || 0 }))
+    .sort((a, b) => b.vol - a.vol);
+}
+const scout = createScout({
+  timeframe: TIMEFRAME, runEngine, getParams, fetchBestPair, fetchOHLCV, tradesFromEvents, candidates: scoutCandidates,
+  isActive: m => activeTokens().includes(m),
+  record: t => cloud.record(t, notify).catch(() => false),
+});
 function saveState(){
   if (!STATE_FILE) return;
   try {
     const o = { v: 1, savedAt: Date.now(), manualStop, autoTokens, addedTokens, removedTokens, lossBaseline, journal: journal.slice(-500), live: live.exportState(), lastReportDay, coins: {},
-      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) }, copy: copy.exportState(), buyMeta: Object.fromEntries(buyMeta) };
+      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) }, copy: copy.exportState(), scout: scout.exportState(), buyMeta: Object.fromEntries(buyMeta) };
     coins.forEach((c, t) => { o.coins[t] = { params: c.params, pendingParams: c.pendingParams, paused: c.paused, tunedAt: c.tunedAt, livePauseUntil: c.livePauseUntil || 0, livePauseAfter: c.livePauseAfter || 0 }; });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(o));
@@ -793,6 +811,7 @@ function loadState(){
     Object.entries(o.coins || {}).forEach(([t, v]) => { const c = coin(t); c.params = v.params || null; c.pendingParams = v.pendingParams || null; c.paused = !!v.paused; c.tunedAt = v.tunedAt || 0; c.livePauseUntil = Number(v.livePauseUntil) || 0; c.livePauseAfter = Number(v.livePauseAfter) || 0; });
     live.importState(o.live);
     copy.importState(o.copy);
+    scout.importState(o.scout);
     Object.entries(o.buyMeta || {}).forEach(([k, v]) => buyMeta.set(k, v));
     if (o.kansen && Array.isArray(o.kansen.w) && o.kansen.w.length === KS_PRIOR.length)
       ks = { w: o.kansen.w, b: Number(o.kansen.b) || 0, pending: o.kansen.pending || [], done: o.kansen.done || [] };
@@ -975,6 +994,7 @@ function statusText(){
   lines.push('Auto-tune: ' + (TUNE_ON ? (TUNE_APPLY ? 'aan' : 'alleen voorstellen') : 'uit') + ' · stop-wachter: ' + (STOPWATCH_MS ? 'aan' : 'uit')
     + (KANSEN ? ' · kansen: ' + ksStats().n + ' uitkomsten' + (ksFilterActive() ? ' (filter AAN)' : ' (leert, filter nog uit)') : ''));
   lines.push(cloud.cfg.on ? '☁️ Cloud-geheugen AAN (' + cloud.cfg.bot + ')' + (cloud.stats.blocked ? ' · ' + cloud.stats.blocked + ' buy(s) tegengehouden' : '') + (cloud.stats.errors ? ' · ⚠️ ' + cloud.stats.errors + ' fout(en)' : '') : '☁️ Cloud-geheugen uit');
+  if (scout.cfg.on) lines.push('🎓 Oefen-modus: ' + Object.keys(scout.state.coins).length + ' coins · ' + scout.state.stats.n + ' oefen-trades (meer: /oefen)');
   if (copy.state.wallets.length) lines.push('🐋 Wallets volgen: ' + copy.state.wallets.length + ' · stand ' + copy.cfg.mode + ' (meer: /wallets)');
   return lines.join('\n');
 }
@@ -993,12 +1013,13 @@ async function handleCommand(text){
     const m = rawArg.match(/^(add|del)_([1-9A-HJ-NP-Za-km-z]{32,44})$/);
     if (m){ cmd = m[1] === 'add' ? '/coin' : '/weg'; rawArg = m[2]; }
     else if (/^(volg|ontvolg)_([1-9A-HJ-NP-Za-km-z]{32,44})$/.test(rawArg)){ const v = rawArg.split('_'); cmd = '/' + v[0]; rawArg = v[1]; }
-    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets|geheugen)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
+    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets|geheugen|oefen)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
   }
   const arg = rawArg.toUpperCase();
   if (cmd === '/coin' || cmd === '/weg' || cmd === '/coinlijst') return coinCommand(cmd, rawArg.trim());
   if (cmd === '/volg' || cmd === '/ontvolg' || cmd === '/wallets'){ const answer = await copy.command(cmd, rawArg); if (cmd !== '/wallets') saveState(); return tgSend(answer); }
   if (cmd === '/geheugen') return tgSend(await cloud.text());
+  if (cmd === '/oefen') return tgSend(scout.text());
   if (cmd === '/status') return tgSend(statusText());
   if (cmd === '/rapport') return tgSend(reportText());
   if (cmd === '/kansen') return tgSend(KANSEN ? ksText() : 'Kansen staat uit (KANSEN=0).');
@@ -1030,7 +1051,7 @@ async function handleCommand(text){
   }
   if (cmd === '/start') return tgSend(statusText() + '\n\nStuur /help voor de commando\'s.');
   if (cmd.startsWith('/'))
-    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/help — deze lijst');
+    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/oefen — oefen-trades met nep-geld op andere coins\n/help — deze lijst');
 }
 const MAX_COINS = Math.max(1, Math.floor(num('MAX_COINS', 6)));
 async function coinCommand(cmd, addr){
@@ -1098,7 +1119,7 @@ async function dailyReport(){
   saveState();
   const wiped = await cloud.cleanup(notify);
   if (wiped) console.log('cloud-geheugen:', wiped, 'oude verliezende trades gewist (lessen blijven)');
-  await tgSend('📊 Dagrapport ' + n.day + '\n' + statusText() + '\n\n' + reportText() + (KANSEN ? '\n\n' + ksText() : '') + (copy.state.wallets.length ? '\n\n' + copy.walletsText() : ''));
+  await tgSend('📊 Dagrapport ' + n.day + '\n' + statusText() + '\n\n' + reportText() + (KANSEN ? '\n\n' + ksText() : '') + (copy.state.wallets.length ? '\n\n' + copy.walletsText() : '') + (scout.cfg.on ? '\n\n' + scout.text() : ''));
 }
 
 async function tick() {
@@ -1155,6 +1176,18 @@ async function start(){
     catch (e){ console.error('cloud-geheugen:', e.message); notify('⚠️ Cloud-geheugen (Supabase) werkt nog niet: ' + e.message.slice(0, 200)); }
   } else console.log('Cloud-geheugen: uit (zet SUPABASE_URL en SUPABASE_KEY om het aan te zetten)');
   // keeps the lessons fresh, and keeps a free Supabase project awake (it pauses after a week without activity)
+  if (scout.cfg.on){
+    const every = Math.max(5 * 60000, tfSeconds() * 1000);
+    console.log('Oefen-modus AAN:', scout.cfg.coins, 'coins · elke', every / 60000, 'min · nep-inzet', scout.cfg.sol, 'SOL' + (cloud.cfg.on ? ' · naar cloud-geheugen' : ' · (cloud-geheugen uit: alleen tellen)'));
+    const scoutTick = async () => {
+      try { const n = await scout.round(); if (n) { console.log('oefen:', n, 'nieuwe oefen-trade(s)'); saveState(); } }
+      catch (e){ console.error('oefen fout', e.message); }
+      // just after a candle closed, like the real bot
+      const tf = tfSeconds() * 1000, since = Date.now() % tf;
+      setTimeout(scoutTick, every > tf ? every : Math.max(30000, tf - since + 40000));
+    };
+    setTimeout(scoutTick, 2 * 60000);
+  }
   if (cloud.cfg.on) setInterval(() => { cloud.refresh(true).catch(e => console.error('cloud-geheugen:', e.message)); }, 6 * 3600 * 1000);
   loop();
   if (STOPWATCH_MS) setInterval(() => { stopWatchTick().catch(e => console.error('stop-wachter fout', e.message)); }, STOPWATCH_MS);
@@ -1200,4 +1233,4 @@ async function start(){
 if (require.main === module) start();
 module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
   pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
-  copy, cloud, buyMeta, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
+  copy, cloud, scout, buyMeta, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };

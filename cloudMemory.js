@@ -26,11 +26,12 @@ function liqBucket(liq){
 function keysFor(c){
   const k = [];
   if (c.kind !== 'nep-kopie' && c.mint) k.push('coin:' + c.mint);
-  if (c.kind === 'strategie'){
+  if (c.kind === 'strategie' || c.kind === 'papier'){
     if (c.source) k.push('src:' + c.source);
     if (c.hour != null) { const b = Math.floor(c.hour / 4) * 4; k.push('uur:' + b + '-' + (b + 4)); }
     const lb = liqBucket(c.liq); if (lb) k.push('liq:' + lb);
   } else if (c.source) k.push('wallet:' + c.source);
+  if (c.kind) k.push('soort:' + (c.kind === 'papier' || c.kind === 'nep-kopie' ? 'oefen' : 'echt'));   // only for the totals, never blocks
   return k;
 }
 const GENERAL = key => /^(src|uur|liq):/.test(key);
@@ -38,7 +39,7 @@ function describeKey(key, sym){
   const [t, v] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
   if (t === 'coin') return 'coin ' + (sym && sym[v] || v.slice(0, 4) + '…' + v.slice(-4));
   if (t === 'wallet') return 'wallet ' + v.slice(0, 4) + '…' + v.slice(-4);
-  if (t === 'src') return v + '-signalen';
+  if (t === 'src') return v.split('+').map(x => ({ REV: 'Dip', BRK: 'Breakout', CONT: 'Herinstap' })[x] || x).join('+') + '-signalen';
   if (t === 'uur') return 'kopen tussen ' + v.replace('-', ':00 en ') + ':00';
   if (t === 'liq') return 'coins met liquiditeit ' + v;
   return key;
@@ -95,6 +96,7 @@ function createCloud(o = {}){
 
   /** Is this a pattern the bots have lost money on again and again? */
   function badLesson(k){
+    if (k.startsWith('soort:')) return null;
     const l = lessons.get(k);
     if (!l) return null;
     const need = GENERAL(k) ? cfg.minN * 2 : cfg.minN;
@@ -125,19 +127,20 @@ function createCloud(o = {}){
       bot: cfg.bot, kind: t.kind || 'strategie', mint: t.mint || null, symbol: t.symbol || null, source: t.source || null,
       hour: t.buyTime ? hourNL(t.buyTime) : null, liq_usd: t.liq != null ? Math.round(t.liq) : null,
       spent_sol: spent, pnl_sol: pnl, pnl_pct: t.pnlPct != null ? t.pnlPct : (spent > 0 ? pnl / spent * 100 : null),
-      exit: t.exit || null, held_min: t.buyTime ? Math.round((now() - t.buyTime) / 60000) : null, sig: t.sig && !String(t.sig).startsWith('(') ? t.sig : null,
+      exit: t.exit || null, held_min: t.buyTime ? Math.round(((t.sellTime || now()) - t.buyTime) / 60000) : null, sig: t.sig && !String(t.sig).startsWith('(') ? t.sig : null,
       good: pnl > 0,
     };
     if (t.mint && t.symbol) symbols[t.mint] = t.symbol;
     const ks = keysFor({ kind: row.kind, mint: row.mint, source: row.source, hour: row.hour, liq: row.liq_usd });
-    // learn locally right away, so the next decision already knows (also if Supabase is slow)
-    ks.forEach(k => { const l = lessons.get(k) || { n: 0, wins: 0, pnl: 0, last: now() }; l.n++; if (pnl > 0) l.wins++; l.pnl += pnl; l.last = now(); lessons.set(k, l); });
+    const learnLocal = () => ks.forEach(k => { const l = lessons.get(k) || { n: 0, wins: 0, pnl: 0, last: now() }; l.n++; if (pnl > 0) l.wins++; l.pnl += pnl; l.last = now(); lessons.set(k, l); });
     try {
-      await api('trades', { body: row, headers: { Prefer: 'return=minimal' } });
+      try { await api('trades', { body: row, headers: { Prefer: 'return=minimal' } }); }
+      catch (e){ if (/Supabase 409/.test(e.message)) return 'dup'; throw e; }   // the other bot already stored this practice trade
+      learnLocal();
       if (ks.length) await api('rpc/learn', { body: { p_keys: ks, p_win: pnl > 0, p_pnl: pnl } });
       stats.saved++; warned = false;
       return true;
-    } catch (e){ fail(e, notify); return false; }
+    } catch (e){ learnLocal(); fail(e, notify); return false; }   // Supabase down: at least this bot learns
   }
 
   async function cleanup(notify){
@@ -151,13 +154,14 @@ function createCloud(o = {}){
     const lines = ['☁️ Cloud-geheugen (gedeeld door je bots)'];
     try { await refresh(true); } catch (e){ return '☁️ Cloud-geheugen: ' + e.message; }
     const all = [...lessons.entries()];
-    const coins = all.filter(([k]) => k.startsWith('coin:'));
-    const tot = coins.reduce((a, [, l]) => ({ n: a.n + l.n, w: a.w + l.wins, p: a.p + l.pnl }), { n: 0, w: 0, p: 0 });
-    if (tot.n) lines.push('Geleerd van ' + tot.n + ' echte trades · ' + Math.round(tot.w / tot.n * 100) + '% winst · ' + (tot.p >= 0 ? '+' : '') + tot.p.toFixed(4) + ' SOL');
+    for (const [k, label] of [['soort:echt', 'echte trades'], ['soort:oefen', 'oefen-trades (nep-geld)']]){
+      const l = lessons.get(k);
+      if (l && l.n) lines.push('Geleerd van ' + l.n + ' ' + label + ' · ' + Math.round(l.wins / l.n * 100) + '% winst · ' + (l.pnl >= 0 ? '+' : '') + l.pnl.toFixed(4) + ' SOL');
+    }
     const bad = all.map(([k]) => [k, badLesson(k)]).filter(x => x[1]).sort((a, b) => a[1].pnl - b[1].pnl).slice(0, 6);
     lines.push(bad.length ? '🚫 Dit doet de bot nu NIET meer (fouten):\n' + bad.map(([k, l]) => '• ' + describeKey(k, symbols) + ': ' + (l.n - l.wins) + '/' + l.n + ' verlies, ' + l.pnl.toFixed(4) + ' SOL').join('\n')
       : '🚫 Nog geen fouten die vaak genoeg terugkwamen (minstens ' + cfg.minN + ' trades per coin/wallet).');
-    const good = all.filter(([, l]) => l.n >= 3 && l.pnl > 0).sort((a, b) => b[1].pnl - a[1].pnl).slice(0, 5);
+    const good = all.filter(([k, l]) => !k.startsWith('soort:') && l.n >= 3 && l.pnl > 0).sort((a, b) => b[1].pnl - a[1].pnl).slice(0, 5);
     if (good.length) lines.push('✅ Werkt goed:\n' + good.map(([k, l]) => '• ' + describeKey(k, symbols) + ': ' + l.wins + '/' + l.n + ' winst, +' + l.pnl.toFixed(4) + ' SOL').join('\n'));
     try {
       const best = await api('trades?select=symbol,pnl_sol,kind,created_at&good=eq.true&order=pnl_sol.desc&limit=5');
