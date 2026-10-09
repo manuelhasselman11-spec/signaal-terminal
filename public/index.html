@@ -150,6 +150,12 @@
   .legend { display: flex; gap: 12px; font-size: 0.72rem; color: var(--muted); font-family: var(--mono); }
   .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
   #chart { width: 100%; height: 470px; }
+  .liveline { border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px 4px; margin-bottom: 10px; background: var(--panel); }
+  .ll-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 0.82rem; margin-bottom: 4px; }
+  .ll-head b { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+  .ll-head select { margin-left: auto; width: auto; padding: 3px 8px; font-size: 0.75rem; }
+  #liveLine { display: block; width: 100%; height: 170px; }
+  @media (max-width: 640px) { #liveLine { height: 140px; } }
   @media (max-width: 640px) { #chart { height: 360px; } }
   .watchlist { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 8px; margin: -4px 0 12px; }
   .watchlist:empty { display: none; }
@@ -250,7 +256,7 @@
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">S</div>
-      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 09-10 (wallets volgen)</small></div>
+      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 09-10 (live-lijn)</small></div>
     </div>
     <div class="search">
       <input id="tokenAddr" value="" spellcheck="false" placeholder="Plak token-adres of link (DexScreener / GMGN / pump.fun)…">
@@ -433,7 +439,13 @@
           <button class="pill" data-tf="hour:4">4u</button>
           <button class="pill" data-tf="day:1">1d</button>
         </div>
-        <div class="legend"><span><i id="lgFast" style="background:var(--ema-fast)"></i>EMA snel</span><span><i style="background:var(--accent)"></i>EMA traag</span></div>
+        <div class="legend"><span><i id="lgFast" style="background:var(--ema-fast)"></i>EMA snel</span><span><i style="background:var(--accent)"></i>EMA traag</span>
+          <label class="checkline" style="margin:0 0 0 6px;" title="Prijs elke seconde, vloeiend over het scherm"><input type="checkbox" id="llOn" checked> ⚡ Live-lijn</label></div>
+      </div>
+      <div id="liveLineWrap" class="liveline">
+        <div class="ll-head"><b id="llPrice">—</b><span id="llChg"></span><span id="llSrc" class="note"></span>
+          <select id="llWin" title="Hoeveel tijd de lijn laat zien"><option value="30">30 s</option><option value="90" selected>1,5 min</option><option value="300">5 min</option></select></div>
+        <canvas id="liveLine"></canvas>
       </div>
       <div class="row" style="gap:10px; align-items:center; margin:0 0 6px;"><div class="note" id="markerNote" style="margin:0; flex:1;"></div>
         <label class="checkline" style="margin:0;"><input type="checkbox" id="showSkipped" checked> Toon overgeslagen signalen</label></div>
@@ -2214,6 +2226,179 @@
   $('rawWicks').addEventListener('change', () => { if (currentBars.length) render(currentBars); });
   setupTicker();
 
+  // ---------- ⚡ live line: price every second, drawn smoothly across the screen (60 fps) ----------
+  // Display only — signals and the bot keep using the real candles.
+  const LL = { ticks: [], disp: null, yMin: null, yMax: null, src: '', jupBlockUntil: 0, busy: false, mint: null, lastFrame: 0, lastTxt: 0, fails: 0 };
+  function llReset(){ LL.ticks = []; LL.disp = null; LL.yMin = LL.yMax = null; LL.fails = 0; }
+  function llVisible(){ return $('llOn').checked && $('liveLine').offsetParent !== null; }
+  async function llPrice(c){
+    const mint = c.tokenAddress;
+    // 1) Jupiter: price from the latest swaps, updates fast
+    if (Date.now() > LL.jupBlockUntil){
+      try {
+        const r = await fetchWithTimeout('https://lite-api.jup.ag/price/v3?ids=' + mint, undefined, 2500);
+        if (r.status === 429) LL.jupBlockUntil = Date.now() + 60000;
+        else if (r.ok){ const j = await r.json(); const px = Number(j && j[mint] && j[mint].usdPrice); if (px > 0) return { px, src: 'Jupiter' }; }
+      } catch (_){}
+    }
+    // 2) DexScreener: the pool itself
+    try {
+      const r = await fetchWithTimeout('https://api.dexscreener.com/latest/dex/pairs/' + ((pairInfo && pairInfo.chainId) || 'solana') + '/' + c.poolAddress, undefined, 2500);
+      if (r.ok){
+        const j = await r.json(); const p = (j.pairs || (j.pair ? [j.pair] : []))[0];
+        if (p){
+          const isBase = p.baseToken && String(p.baseToken.address).toLowerCase() === String(mint).toLowerCase();
+          const pu = Number(p.priceUsd), pn = Number(p.priceNative);
+          const px = isBase ? pu : (pn > 0 && pu > 0 ? pu / pn : NaN);
+          if (px > 0) return { px, src: 'DexScreener' };
+        }
+      }
+    } catch (_){}
+    return null;
+  }
+  async function llFetch(){
+    if (!llVisible() || lastMode !== 'live' || !lastLiveCtx || document.hidden || LL.busy) return;
+    const c = lastLiveCtx;
+    if (LL.mint !== c.tokenAddress){ LL.mint = c.tokenAddress; llReset(); }
+    LL.busy = true;
+    try {
+      const r = await llPrice(c);
+      if (!r || LL.mint !== c.tokenAddress){ LL.fails++; return; }
+      const ref = LL.ticks.length ? LL.ticks[LL.ticks.length - 1].p : (currentBars.length ? currentBars[currentBars.length - 1].close : 0);
+      if (ref > 0 && (r.px / ref > 1.5 || r.px / ref < 0.6)) return;   // a different pool's price: ignore
+      LL.fails = 0; LL.src = r.src;
+      const now = Date.now();
+      LL.ticks.push({ t: now, p: r.px });
+      while (LL.ticks.length > 2 && LL.ticks[0].t < now - 330000) LL.ticks.shift();
+      applyTick(r.px);   // the forming candle moves with it
+      // second charts: every live price becomes a point in the candles, so 1s/5s keep moving between trades
+      if (currentTf.startsWith('second:')){
+        let cache = tradeCache.get(c.poolAddress);
+        if (!cache){ cache = new Map(); tradeCache.set(c.poolAddress, cache); }
+        const t = Math.floor(now / 1000);
+        cache.set('tick-' + t, { t, price: r.px, vol: 0 });
+      }
+    } finally { LL.busy = false; }
+  }
+  function hexA(col, a){
+    const m = /^#([0-9a-f]{6})$/i.exec(String(col).trim());
+    if (!m) return col;
+    const n = parseInt(m[1], 16);
+    return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+  }
+  function niceStep(range, n){
+    const raw = range / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / mag;
+    return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag;
+  }
+  function llDraw(ts){
+    requestAnimationFrame(llDraw);
+    const cv = $('liveLine');
+    const want = $('llOn').checked ? '' : 'none';
+    if ($('liveLineWrap').style.display !== want) $('liveLineWrap').style.display = want;
+    if (!llVisible()) return;
+    const dt = Math.min(100, ts - (LL.lastFrame || ts)); LL.lastFrame = ts;
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)){ cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    const cText = cssVar('--muted') || '#888', cGrid = cssVar('--border') || '#333';
+    g.font = '11px JetBrains Mono, monospace';
+    if (!LL.ticks.length){
+      g.fillStyle = cText; g.textAlign = 'center';
+      g.fillText(lastMode === 'live' ? 'Live prijs ophalen…' : 'Laad een coin om de live-lijn te zien', W / 2, H / 2);
+      $('llPrice').textContent = '—'; $('llChg').textContent = ''; $('llSrc').textContent = '';
+      return;
+    }
+    const now = Date.now(), win = Number($('llWin').value) * 1000;
+    const last = LL.ticks[LL.ticks.length - 1];
+    // the newest price glides in instead of jumping
+    if (LL.disp == null) LL.disp = last.p;
+    LL.disp += (last.p - LL.disp) * Math.min(1, dt / 220);
+    const padR = 74, padL = 6, padT = 10, padB = 18;
+    const plotW = W - padL - padR, plotH = H - padT - padB;
+    const t0 = now - win, t1 = now + win * 0.03;   // a little air on the right, so the head is not at the edge
+    const pts = LL.ticks.filter((p, i) => p.t >= t0 - 3000 || (LL.ticks[i + 1] && LL.ticks[i + 1].t >= t0)).map(p => ({ t: p.t, p: p.p }));
+    pts[pts.length - 1].p = LL.disp;
+    pts.push({ t: now, p: LL.disp });
+    // price range eases too, so the line never jerks when a new high/low comes in
+    let lo = Infinity, hi = -Infinity;
+    pts.forEach(p => { if (p.t >= t0 - 3000){ lo = Math.min(lo, p.p); hi = Math.max(hi, p.p); } });
+    const mid = (lo + hi) / 2, minSpan = mid * 0.004;
+    if (hi - lo < minSpan){ lo = mid - minSpan / 2; hi = mid + minSpan / 2; }
+    const pad = (hi - lo) * 0.18; lo -= pad; hi += pad;
+    if (LL.yMin == null){ LL.yMin = lo; LL.yMax = hi; }
+    const k = Math.min(1, dt / 350);
+    LL.yMin += (lo - LL.yMin) * k; LL.yMax += (hi - LL.yMax) * k;
+    const X = t => padL + (t - t0) / (t1 - t0) * plotW;
+    const Y = p => padT + (1 - (p - LL.yMin) / (LL.yMax - LL.yMin)) * plotH;
+    // grid + labels
+    g.strokeStyle = hexA(cGrid, 0.5); g.lineWidth = 1; g.fillStyle = cText; g.textAlign = 'left';
+    const ps = niceStep(LL.yMax - LL.yMin, 4);
+    for (let v = Math.ceil(LL.yMin / ps) * ps; v <= LL.yMax; v += ps){
+      const y = Math.round(Y(v)) + 0.5;
+      g.beginPath(); g.moveTo(padL, y); g.lineTo(padL + plotW, y); g.stroke();
+      g.fillText(fmtPrice(v), padL + plotW + 6, y + 4);
+    }
+    const tsStep = win <= 30000 ? 5000 : win <= 90000 ? 15000 : 60000;
+    g.textAlign = 'center';
+    for (let t = Math.ceil(t0 / tsStep) * tsStep; t <= now; t += tsStep){
+      const x = Math.round(X(t)) + 0.5;
+      g.beginPath(); g.moveTo(x, padT); g.lineTo(x, padT + plotH); g.stroke();
+      const d = new Date(t);
+      g.fillText(String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0'), x, H - 4);
+    }
+    // the line: smooth curve through the prices
+    const first = pts.find(p => p.t >= t0) || pts[0];
+    const up = LL.disp >= first.p;
+    const col = up ? (cssVar('--buy') || '#3fc07a') : (cssVar('--sell') || '#ec6a60');
+    g.save();
+    g.beginPath(); g.rect(padL, 0, plotW + 2, H); g.clip();
+    const path = new Path2D();
+    path.moveTo(X(pts[0].t), Y(pts[0].p));
+    for (let i = 1; i < pts.length - 1; i++){
+      const xm = (X(pts[i].t) + X(pts[i + 1].t)) / 2, ym = (Y(pts[i].p) + Y(pts[i + 1].p)) / 2;
+      path.quadraticCurveTo(X(pts[i].t), Y(pts[i].p), xm, ym);
+    }
+    path.lineTo(X(now), Y(LL.disp));
+    const fill = new Path2D(path);
+    fill.lineTo(X(now), padT + plotH); fill.lineTo(X(pts[0].t), padT + plotH); fill.closePath();
+    const grad = g.createLinearGradient(0, padT, 0, padT + plotH);
+    grad.addColorStop(0, hexA(col, 0.28)); grad.addColorStop(1, hexA(col, 0));
+    g.fillStyle = grad; g.fill(fill);
+    g.strokeStyle = col; g.lineWidth = 2; g.lineJoin = 'round'; g.lineCap = 'round'; g.stroke(path);
+    g.restore();
+    // price line + pulsing head
+    const hx = X(now), hy = Y(LL.disp);
+    g.setLineDash([3, 4]); g.strokeStyle = hexA(col, 0.6); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(padL, hy); g.lineTo(padL + plotW, hy); g.stroke(); g.setLineDash([]);
+    const pulse = (ts % 1400) / 1400;
+    g.fillStyle = hexA(col, 0.35 * (1 - pulse)); g.beginPath(); g.arc(hx, hy, 4 + pulse * 10, 0, Math.PI * 2); g.fill();
+    g.fillStyle = col; g.beginPath(); g.arc(hx, hy, 4, 0, Math.PI * 2); g.fill();
+    g.fillStyle = col; g.fillRect(padL + plotW + 2, hy - 9, padR - 4, 18);
+    g.fillStyle = '#fff'; g.textAlign = 'left'; g.font = 'bold 11px JetBrains Mono, monospace';
+    g.fillText(fmtPrice(LL.disp), padL + plotW + 6, hy + 4);
+    // header (a few times per second is enough)
+    if (ts - LL.lastTxt > 150){
+      LL.lastTxt = ts;
+      const chg = (LL.disp / first.p - 1) * 100;
+      $('llPrice').textContent = '$' + fmtPrice(LL.disp);
+      $('llChg').textContent = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '% in ' + $('llWin').selectedOptions[0].text;
+      $('llChg').className = chg >= 0 ? 'up' : 'down';
+      const stale = now - last.t > 8000;
+      $('llSrc').textContent = stale ? '⏸ geen nieuwe prijs sinds ' + Math.round((now - last.t) / 1000) + ' s' : '● live · ' + LL.src;
+      $('llSrc').className = 'note ' + (stale ? 'down' : 'ok');
+    }
+  }
+  $('llOn').addEventListener('change', () => { $('liveLineWrap').style.display = $('llOn').checked ? '' : 'none'; saveSettings(); });
+  $('llWin').addEventListener('change', () => { LL.yMin = LL.yMax = null; saveSettings(); });
+  $('liveLineWrap').style.display = $('llOn').checked ? '' : 'none';
+  setInterval(llFetch, 1000);
+  window.__terminalDebug = () => ({ tf: currentTf, bars: currentBars.length, lastBar: currentBars.length ? currentBars[currentBars.length - 1].time : 0, liveBar: liveBar ? liveBar.time : 0, ticks: LL.ticks.length });
+  requestAnimationFrame(llDraw);
+
+
   // ---------- period backtest with a euro amount ----------
   async function fetchHistory(network, poolAddress, unit, agg, fromSec, onProgress, tokenAddress){
     // GeckoTerminal returns max 1000 candles per call; page backwards with before_timestamp
@@ -2385,7 +2570,7 @@
     'rsiLen','rsiOS','rsiLookback','revBody','sweepLen','donLen','volMult','trailMult','partialFrac',
     'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge','useHtf','htfMult','letRun','runFrac','useCont','showSkipped','costSol',
     'paperBuyPct','maxSolPerBuy','slippageBps','maxRoundTrip','wkEur','wkDays','wkStake','wkTf',
-    'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq','pdTrend','pdNew','pdBig','pdWatch','pdLiq','pdHorizon','pdAuto','tgBot1','tgBot2','wlRpc','wlDepth','wlAuto','wlOnlyBuys','wlMinLiq','wlShowBots'];
+    'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq','pdTrend','pdNew','pdBig','pdWatch','pdLiq','pdHorizon','pdAuto','tgBot1','tgBot2','llOn','llWin','wlRpc','wlDepth','wlAuto','wlOnlyBuys','wlMinLiq','wlShowBots'];
   function saveSettings(){
     const o = {};
     SETTING_IDS.forEach(id => { const el = $(id); if (el) o[id] = el.type === 'checkbox' ? el.checked : el.value; });
