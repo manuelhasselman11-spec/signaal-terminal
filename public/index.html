@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Signaal Terminal</title>
+<title>Claude Bot</title>
+<meta name="theme-color" content="#070a12">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='11' fill='%23e8825c'/%3E%3Crect x='8' y='11' width='24' height='19' rx='7' fill='%231b0f08'/%3E%3Ccircle cx='15' cy='20' r='3' fill='%23f6c27a'/%3E%3Ccircle cx='25' cy='20' r='3' fill='%23f6c27a'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -11,20 +13,23 @@
 <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js"></script>
 <style>
   :root {
-    --bg: #f4f3ef;
-    --bg-glow: rgba(181,121,58,0.10);
+    --bg: #f5f4f0;
+    --bg-glow: rgba(214,110,70,0.10);
+    --bg-glow2: rgba(90,110,220,0.07);
     --panel: #ffffff;
-    --panel-2: #f0eee8;
-    --border: #dcd9d0;
-    --text: #1b1a17;
-    --muted: #6d685c;
-    --accent: #b5793a;
+    --panel-2: #f1efe9;
+    --border: #e0ddd3;
+    --text: #17171c;
+    --muted: #686a76;
+    --accent: #c75f3a;
+    --accent-2: #6d5ce8;
     --accent-ink: #ffffff;
-    --buy: #1f7a4d;
-    --sell: #b23b3b;
-    --warn: #a67c1f;
-    --ema-fast: #2f7fc1;
-    --shadow: 0 1px 2px rgba(0,0,0,0.05), 0 8px 24px rgba(40,30,10,0.06);
+    --buy: #128a55;
+    --sell: #c53b3b;
+    --warn: #a8720f;
+    --ema-fast: #2f74c9;
+    --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 10px 28px rgba(30,20,10,0.06);
+    --card-glow: none;
     --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
     --sans: 'Inter', system-ui, -apple-system, sans-serif;
     box-sizing: border-box;
@@ -33,43 +38,50 @@
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #0c0f0d;
-      --bg-glow: rgba(217,161,91,0.09);
-      --panel: #141915;
-      --panel-2: #1b221d;
-      --border: #28302a;
-      --text: #ebe9e2;
-      --muted: #8b9088;
-      --accent: #dca35c;
-      --accent-ink: #1a1408;
-      --buy: #3fc07a;
-      --sell: #ec6a60;
-      --warn: #dca35c;
-      --ema-fast: #56a6ea;
-      --shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 10px 30px rgba(0,0,0,0.35);
+      --bg: #070a12;
+      --bg-glow: rgba(226,123,86,0.13);
+      --bg-glow2: rgba(109,92,232,0.13);
+      --panel: #0d1220;
+      --panel-2: #131a2c;
+      --border: #1e2740;
+      --text: #e9edf6;
+      --muted: #8c96ad;
+      --accent: #e8825c;
+      --accent-2: #8b7cf6;
+      --accent-ink: #1b0f08;
+      --buy: #3ad49a;
+      --sell: #f46f6f;
+      --warn: #f2b84b;
+      --ema-fast: #62a8ff;
+      --shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 14px 34px rgba(0,0,0,0.45);
+      --card-glow: radial-gradient(420px 160px at 0% 0%, rgba(232,130,92,0.07), transparent 70%);
     }
   }
   :root[data-theme="dark"] {
-    --bg: #0c0f0d;
-    --bg-glow: rgba(217,161,91,0.09);
-    --panel: #141915;
-    --panel-2: #1b221d;
-    --border: #28302a;
-    --text: #ebe9e2;
-    --muted: #8b9088;
-    --accent: #dca35c;
-    --accent-ink: #1a1408;
-    --buy: #3fc07a;
-    --sell: #ec6a60;
-    --warn: #dca35c;
-    --ema-fast: #56a6ea;
-    --shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 10px 30px rgba(0,0,0,0.35);
+    --bg: #070a12;
+    --bg-glow: rgba(226,123,86,0.13);
+    --bg-glow2: rgba(109,92,232,0.13);
+    --panel: #0d1220;
+    --panel-2: #131a2c;
+    --border: #1e2740;
+    --text: #e9edf6;
+    --muted: #8c96ad;
+    --accent: #e8825c;
+    --accent-2: #8b7cf6;
+    --accent-ink: #1b0f08;
+    --buy: #3ad49a;
+    --sell: #f46f6f;
+    --warn: #f2b84b;
+    --ema-fast: #62a8ff;
+    --shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 14px 34px rgba(0,0,0,0.45);
+    --card-glow: radial-gradient(420px 160px at 0% 0%, rgba(232,130,92,0.07), transparent 70%);
   }
   * { box-sizing: border-box; }
   html { scroll-padding-top: env(safe-area-inset-top, 0px); }
   body {
     margin: 0; min-height: 100vh;
-    background: radial-gradient(900px 420px at 85% -8%, var(--bg-glow), transparent 70%), var(--bg);
+    background: radial-gradient(900px 460px at 88% -10%, var(--bg-glow), transparent 70%), radial-gradient(800px 420px at -5% 8%, var(--bg-glow2), transparent 70%), var(--bg);
+    background-attachment: fixed;
     color: var(--text); font-family: var(--sans); -webkit-font-smoothing: antialiased;
   }
   .wrap { max-width: 1240px; margin: 0 auto; padding: 18px 16px 56px; }
@@ -106,7 +118,7 @@
   .status-line.err { color: var(--sell); }
   .status-line.ok { color: var(--buy); }
 
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; box-shadow: var(--shadow); }
+  .card { background: var(--card-glow), var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; box-shadow: var(--shadow); }
   h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 12px; color: var(--muted); font-weight: 650; }
 
   /* token header */
@@ -253,29 +265,165 @@
   .pos-badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
   .pos-badge.on .dot { animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  /* ---------- Claude Bot look: header, tabs, overview ---------- */
+  .hdr { justify-content: space-between; margin-bottom: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 18px;
+    background: var(--card-glow), color-mix(in srgb, var(--panel) 88%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(8px); }
+  .hdr .brand-mark { width: 42px; height: 42px; border-radius: 12px; background: none; padding: 0; box-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 35%, transparent); }
+  .hdr .brand-mark svg { display: block; }
+  .hdr .brand h1 { font-size: 1.22rem; font-weight: 800; letter-spacing: -0.02em; }
+  .hchips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .hchip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 0.74rem; color: var(--muted); padding: 6px 11px;
+    border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2); white-space: nowrap; }
+  .hchip b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+  .hchip.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--buy); box-shadow: 0 0 10px var(--buy); animation: pulse 1.6s ease-in-out infinite; }
+  .hchip.live b { color: var(--buy); letter-spacing: .06em; }
+  .hchip.live { border-color: color-mix(in srgb, var(--buy) 45%, var(--border)); background: color-mix(in srgb, var(--buy) 10%, var(--panel-2)); }
+  .hchip.live.off { border-color: var(--border); background: var(--panel-2); }
+  .hchip.live.off i { background: var(--muted); box-shadow: none; animation: none; }
+  .hchip.live.off b { color: var(--muted); }
+  .hchip.live.wait i { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .hchip.live.wait b { color: var(--warn); }
+  .tools { gap: 10px; margin-bottom: 12px; }
+  .tabs { display: flex; gap: 4px; padding: 4px; border-radius: 13px; background: var(--panel-2); border: 1px solid var(--border); overflow-x: auto; max-width: 100%; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { background: transparent; color: var(--muted); padding: 8px 13px; border-radius: 10px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; flex: none; }
+  .tab:hover { filter: none; color: var(--text); }
+  .tab.active { background: var(--panel); color: var(--text); box-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 2px 10px rgba(0,0,0,.25); }
+  .tab.active::after { content: ""; display: block; height: 2px; margin: 4px auto -4px; width: 60%; border-radius: 2px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+  @media (max-width: 700px) { .tools .search { flex-basis: 100%; } .tabs { width: 100%; } .hdr .brand small { display: none; } .hchip { padding: 5px 9px; } #hcTasks { display: none; } }
+
+  .ov { margin-bottom: 16px; }
+  .ov-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 2px 10px; }
+  .ov-head select { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 9px; padding: 6px 9px; font-size: 0.76rem; font-family: var(--sans); }
+  .ov.folded .ov-body { display: none; }
+  .ov.folded #ovFold { transform: rotate(-90deg); }
+  .ov-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+  @media (max-width: 900px) { .ov-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .ovc { position: relative; overflow: hidden; background: var(--card-glow), var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 14px 16px; box-shadow: var(--shadow); min-width: 0; }
+  .ovc::before { content: ""; position: absolute; left: 0; top: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent), transparent 70%); opacity: .8; }
+  .ovc .k { font-size: 0.68rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+  .ovc .v { font-family: var(--mono); font-size: 1.45rem; font-weight: 750; letter-spacing: -0.03em; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ovc .s { font-size: 0.72rem; color: var(--muted); margin-top: 4px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 640px) { .ovc .v { font-size: 1.15rem; } .ovc { padding: 12px; } }
+  .ovc-ring { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .ovc-ring > div { min-width: 0; }
+  .ring { flex: none; transform: rotate(-90deg); }
+  .ring-bg { fill: none; stroke: var(--panel-2); stroke-width: 5; }
+  .ring-fg { fill: none; stroke: var(--buy); stroke-width: 5; stroke-linecap: round; transition: stroke-dasharray .6s ease; }
+  @media (max-width: 640px) { .ring { width: 48px; height: 48px; } }
+  .ov-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap: 12px; margin-bottom: 12px; }
+  @media (max-width: 940px) { .ov-grid { grid-template-columns: 1fr; } }
+  .ov-cardhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .ov-badge { font-family: var(--mono); font-size: 0.72rem; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); margin-left: auto; }
+  .ov-badge.up { color: var(--buy); border-color: color-mix(in srgb, var(--buy) 40%, var(--border)); background: color-mix(in srgb, var(--buy) 10%, var(--panel-2)); }
+  .ov-badge.down { color: var(--sell); border-color: color-mix(in srgb, var(--sell) 40%, var(--border)); background: color-mix(in srgb, var(--sell) 10%, var(--panel-2)); }
+  #ovChart { width: 100%; height: 230px; }
+  @media (max-width: 640px) { #ovChart { height: 180px; } }
+  .actlog { display: flex; flex-direction: column; gap: 4px; height: 230px; overflow-y: auto; font-family: var(--mono); font-size: 0.72rem; }
+  @media (max-width: 940px) { .actlog { height: 210px; } }
+  .act { display: grid; grid-template-columns: 44px 74px minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 5px 8px; border-radius: 8px; background: var(--panel-2); }
+  .act .t { color: var(--muted); }
+  .act .m { overflow-wrap: anywhere; }
+  .atag { font-weight: 750; font-size: 0.66rem; letter-spacing: .03em; }
+  .atag.KOOP, .atag.WINST { color: var(--buy); } .atag.VERLIES, .atag.VERKOOP { color: var(--sell); }
+  .atag.SIGNAAL, .atag.JAGER { color: var(--accent); } .atag.SCAN, .atag.WALVIS { color: var(--ema-fast); } .atag.RISK { color: var(--warn); } .atag.INFO, .atag.ECHT { color: var(--accent-2); }
+  .ov-target { margin-bottom: 12px; padding: 12px 16px; }
+  .ov-target .ov-cardhead { margin-bottom: 8px; }
+  .ov-goalin { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 0.74rem; color: var(--muted); font-family: var(--mono); }
+  .ov-goalin input { width: 72px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 4px 7px; font-family: var(--mono); font-size: 0.76rem; }
+  .ov-bar { height: 10px; border-radius: 999px; background: var(--panel-2); overflow: hidden; border: 1px solid var(--border); }
+  .ov-bar > i { display: block; height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .5s ease; }
+  .ov-bar.neg > i { background: var(--sell); }
+  .ov-bots { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+  @media (max-width: 1100px) { .ov-bots { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 560px) { .ov-bots { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .botc { text-align: left; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 16px; padding: 12px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; align-items: center; gap: 6px; font-weight: 500; min-width: 0; }
+  .botc:hover { filter: none; border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+  .botc svg { display: block; }
+  .botc .bn { font-weight: 700; font-size: 0.8rem; }
+  .botc .bs { font-size: 0.68rem; color: var(--muted); text-align: center; line-height: 1.35; min-height: 2.7em; overflow: hidden; width: 100%; overflow-wrap: anywhere; }
+  .botc .bst { font-family: var(--mono); font-size: 0.64rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; letter-spacing: .05em; text-transform: uppercase; background: var(--panel-2); color: var(--muted); }
+  .botc.on { border-color: color-mix(in srgb, var(--buy) 40%, var(--border)); }
+  .botc.on .bst { background: color-mix(in srgb, var(--buy) 15%, transparent); color: var(--buy); }
+  .botc.warn .bst { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+  .botc.on .bot-eye { animation: blink 4s infinite; transform-origin: center; transform-box: fill-box; }
+  .botc.on svg { animation: bob 2.4s ease-in-out infinite; }
+  .botc .bot-eye { fill: var(--muted); }
+  .botc.on .bot-eye { fill: currentColor; }
+  @keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.1); } }
+  @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+  @media (prefers-reduced-motion: reduce) { .botc.on svg, .botc.on .bot-eye, .hchip.live i, .pos-badge.on .dot { animation: none; } }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-  <div class="topbar">
+  <header class="topbar hdr">
     <div class="brand">
-      <div class="brand-mark">S</div>
-      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 10-10d (slimmere bot · testtrade)</small></div>
+      <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40" width="40" height="40"><defs><linearGradient id="bmG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f19a6f"/><stop offset="1" stop-color="#9a6cf0"/></linearGradient></defs><rect x="1" y="1" width="38" height="38" rx="11" fill="url(#bmG)"/><line x1="20" y1="6" x2="20" y2="11" stroke="#1b0f08" stroke-width="2.2" stroke-linecap="round"/><circle cx="20" cy="5.5" r="2.3" fill="#1b0f08"/><rect x="8" y="11" width="24" height="19" rx="7" fill="#1b0f08"/><circle cx="15" cy="20" r="3" fill="#f6c27a"/><circle cx="25" cy="20" r="3" fill="#f6c27a"/><path d="M15 26 Q20 28.5 25 26" stroke="#f6c27a" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg></div>
+      <div><h1>Claude Bot</h1><small>Solana signaal-terminal · paper, radar &amp; bots · versie 11-10a</small></div>
     </div>
+    <div class="hchips">
+      <span class="hchip" id="hcClock" title="Lokale tijd">⏱ <b>--:--:--</b></span>
+      <span class="hchip" id="hcTasks" title="Hoeveel automatische taken er nu draaien">⚙️ <b>0</b> taken</span>
+      <span class="hchip live off" id="hcLive" title="Groen = de prijs van de geladen coin komt live binnen"><i></i><b>OFFLINE</b></span>
+      <button class="ghost icon" id="themeBtn" title="Licht / donker">◐</button>
+    </div>
+  </header>
+  <div class="topbar tools">
     <div class="search">
       <input id="tokenAddr" value="" spellcheck="false" placeholder="Plak token-adres of link (DexScreener / GMGN / pump.fun)…">
       <button id="loadBtn">Laad</button>
       <button class="ghost icon" id="watchAddBtn" title="Opslaan in watchlist">☆</button>
     </div>
-    <button class="ghost" id="predNavBtn" title="Welke coins hebben nu de beste papieren — en leert van de uitkomst">🔮 Kansen</button>
-    <button class="ghost" id="dashNavBtn" title="Wat doen en leren je bots? (uit Supabase)">📊 Dashboard</button>
-    <button class="ghost" id="walletNavBtn" title="Volg slimme Solana-wallets: wat kopen de winnaars?">🐋 Wallets</button>
-    <button class="ghost" id="pickNavBtn" title="Welke coins passen bij de bot?">🏆 Coins voor de bot</button>
-    <button class="ghost icon" id="themeBtn" title="Licht / donker">◐</button>
+    <nav class="tabs" aria-label="Pagina's">
+      <button class="tab active" id="termNavBtn" title="Chart, overzicht, paper trading en backtests">📈 Terminal</button>
+      <button class="tab" id="dashNavBtn" title="Wat doen en leren je bots? (uit Supabase)">📊 Dashboard</button>
+      <button class="tab" id="predNavBtn" title="Welke coins hebben nu de beste papieren — en leert van de uitkomst">🔮 Kansen</button>
+      <button class="tab" id="walletNavBtn" title="Volg slimme Solana-wallets: wat kopen de winnaars?">🐋 Wallets</button>
+      <button class="tab" id="pickNavBtn" title="Welke coins passen bij de bot?">🏆 Coins</button>
+    </nav>
   </div>
   <div class="status-line" id="statusLine">Plak een token-adres en klik op Laad.</div>
   <div class="watchlist" id="watchlist"></div>
+
+  <!-- overview: the whole picture at a glance (real numbers only: website paper or your bots via Supabase) -->
+  <section id="ovView" class="ov">
+    <div class="ov-head">
+      <h2 style="margin:0;">Overzicht</h2>
+      <select id="ovSrc" title="Waar komen de cijfers vandaan?"><option value="auto" selected>Bron: automatisch</option><option value="bots">Bron: je Railway-bots (Supabase)</option><option value="paper">Bron: paper trading hier</option></select>
+      <span class="note" id="ovSrcNote" style="margin:0;"></span>
+      <button class="ghost icon" id="ovFold" title="In- of uitklappen" style="margin-left:auto;">▾</button>
+    </div>
+    <div class="ov-body" id="ovBody">
+      <div class="ov-stats">
+        <div class="ovc"><div class="k" id="ovK1">Winst</div><div class="v" id="ovV1">–</div><div class="s" id="ovS1">&nbsp;</div></div>
+        <div class="ovc"><div class="k" id="ovK2">Saldo</div><div class="v" id="ovV2">–</div><div class="s" id="ovS2">&nbsp;</div></div>
+        <div class="ovc ovc-ring"><div><div class="k">Win rate</div><div class="v" id="ovV3">–</div><div class="s" id="ovS3">&nbsp;</div></div>
+          <svg class="ring" viewBox="0 0 44 44" width="64" height="64" aria-hidden="true"><circle cx="22" cy="22" r="18" class="ring-bg"/><circle cx="22" cy="22" r="18" class="ring-fg" id="ovRing" stroke-dasharray="0 113.1"/></svg></div>
+        <div class="ovc"><div class="k">Grootste winst</div><div class="v up" id="ovV4">–</div><div class="s" id="ovS4">&nbsp;</div></div>
+      </div>
+      <div class="ov-grid">
+        <div class="card ov-chartcard">
+          <div class="ov-cardhead"><h2 style="margin:0;">Winstverloop</h2><span class="ov-badge" id="ovBadge">–</span></div>
+          <div id="ovChart"></div>
+          <div class="feed-empty" id="ovChartEmpty">Nog geen afgesloten trades om te tekenen.</div>
+        </div>
+        <div class="card ov-logcard">
+          <div class="ov-cardhead"><h2 style="margin:0;">Activiteit</h2><span class="note" id="ovLogN" style="margin:0;"></span><button class="ghost" id="ovLogClear" style="margin-left:auto;padding:4px 9px;font-size:0.72rem;">Wissen</button></div>
+          <div class="actlog" id="ovLog"><div class="feed-empty">Nog niets gebeurd. Laad een coin, zet paper trading aan of start een scan.</div></div>
+        </div>
+      </div>
+      <div class="card ov-target">
+        <div class="ov-cardhead"><h2 style="margin:0;">🎯 Dagdoel</h2><span class="note" id="ovGoalTxt" style="margin:0;"></span>
+          <label class="ov-goalin" title="Je doel voor vandaag, in dollars">doel $<input id="ovGoal" type="number" value="25" min="1" step="1"></label></div>
+        <div class="ov-bar"><i id="ovGoalBar"></i></div>
+      </div>
+      <div class="ov-bots" id="ovBots"></div>
+    </div>
+  </section>
 
   <!-- chances page: score now, check later, learn -->
   <div id="predView" style="display:none;">
@@ -644,7 +792,7 @@
         <div class="field"><label>Snel uit: na N candles nog onder signaalprijs → verkopen (0 = uit)</label><input id="quickBars" type="number" value="0" min="0" step="1"></div>
         <div class="field"><label><input type="checkbox" id="useMarket" checked> SOL-marktfilter: niet kopen als SOL in een 1-uurs-daaltrend zit</label><div class="note" id="mktNote" style="margin:4px 0 0;">SOL-trend laden…</div></div>
         <div class="field"><label><input type="checkbox" id="usePatterns" checked> Patroonfilter: niet kopen na een sprint of in een dalende trend</label></div>
-        <div class="field"><label>Trend-kwaliteit minimaal (0 = uit, bijv. 0.3)</label><input id="minEr" type="number" value="0" min="0" max="1" step="0.05" title="Netto stijging gedeeld door alle beweging over 20 candles. Hoger = alleen kopen in een rustige, nette stijging (minder trades). In Railway: MIN_ER."></div>
+        <div class="field"><label>Trend-kwaliteit minimaal (standaard 0.3, 0 = uit)</label><input id="minEr" type="number" value="0.3" min="0" max="1" step="0.05" title="Netto stijging gedeeld door alle beweging over 20 candles. Hoger = alleen kopen in een rustige, nette stijging (minder trades). In Railway: MIN_ER."></div>
         <div class="field"><label>Sweep: vergelijk N candles terug</label><input id="sweepLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: N-candle high</label><input id="donLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: volume × gemiddelde</label><input id="volMult" type="number" value="1.5" min="0.5" step="0.1"></div>
@@ -795,6 +943,9 @@
     fastSeries.applyOptions({ color: c.fast });
     slowSeries.applyOptions({ color: c.slow });
     if (rsiSeries) rsiSeries.applyOptions({ color: c.slow });
+    // the dashboard and overview charts follow the theme too
+    try { if (DB.chart){ DB.chart.applyOptions(themeOpts(c)); DB.lines.papier.applyOptions({ color: c.slow }); DB.lines.echt.applyOptions({ color: c.up }); } } catch (_){}
+    if (typeof ovSchedule === 'function' && OV) ovSchedule();
   }
   function initChart(){
     const c = chartColors();
@@ -1413,7 +1564,7 @@
       ['OUD: 2%-stop krapper + snel-uit 3', Object.assign({}, p, { maxLossPct: 2, lossMode: 'tighten', quickBars: 3 })],
       ['Zonder SOL-marktfilter', Object.assign({}, p, { marketOk: null })],
       ['Zonder patroonfilter', Object.assign({}, p, { usePatterns: false })],
-      ['Met trend-kwaliteit ≥ 0.3', Object.assign({}, p, { minEr: 0.3 })],
+      ['Zonder trend-kwaliteit', Object.assign({}, p, { minEr: 0 })],
       ['Scalp (snel winst nemen)', Object.assign({}, p, SCALP)]
     ];
   }
@@ -1440,7 +1591,7 @@
       lossMode: $('lossMode').value === 'tighten' ? 'tighten' : 'skip',
       quickBars: $('quickBars').value === '' ? 0 : Math.max(0, Math.floor(Number($('quickBars').value) || 0)),
       usePatterns: $('usePatterns').checked,
-      minEr: Math.max(0, Math.min(1, Number($('minEr').value) || 0)),
+      minEr: $('minEr').value === '' ? 0.3 : Math.max(0, Math.min(1, Number($('minEr').value) || 0)),
       slipPct: $('slipPct').value === '' ? 0.5 : Math.max(0, Number($('slipPct').value) || 0),
       marketOk: $('useMarket').checked && solMarket.fn ? solMarket.fn : null
     };
@@ -1703,6 +1854,7 @@
       if (notifOn && newOnes.length){
         newOnes.forEach(e => { try { new Notification('Signaal: ' + e.type + (e.src ? ' (' + e.src + ')' : ''), { body: e.type + ' @ ' + fmtPrice(e.price) }); } catch(_){} });
       }
+      newOnes.forEach(e => ovAct(e.type === 'BUY' ? 'SIGNAAL' : e.type === 'FLIP' ? 'INFO' : 'SIGNAAL', symNow() + ' ' + e.type + (e.src ? ' (' + e.src + ')' : '') + ' @ $' + fmtPrice(e.price)));
       runBotCycle(newOnes);
       if (newOnes.length){
         try { handlePaperTrade(newOnes); } catch (err) { logPaper('FOUT', err.message); }
@@ -1762,7 +1914,7 @@
 
   // ---------- paper trading (simulated, no wallet / no real funds) ----------
   // the paper position belongs to ONE coin (mint): switching coins never values or sells it at another coin's price
-  let paperState = { solBalance: 1, tokenBalance: 0, startSol: 1, costBasis: 0, realizedPnl: 0, mint: '', sym: '', lastPx: 0 };
+  let paperState = { solBalance: 1, tokenBalance: 0, startSol: 1, costBasis: 0, realizedPnl: 0, mint: '', sym: '', lastPx: 0, curPnl: 0, curCost: 0, closed: [] };   // closed: [{t, pnl, pct, sym}] one row per finished position (overview)
   const PAPER_KEY = 'signaalTerminal.paper.v1';
   function clamp0(n){ return (Number.isFinite(n) && n > 1e-12) ? n : 0; }
   function savePaper(){ try { localStorage.setItem(PAPER_KEY, JSON.stringify({ s: paperState, tp1: paperTp1Done, log: $('paperLog').innerHTML.slice(0, 40000) })); } catch (_){} }
@@ -1772,7 +1924,10 @@
       if (!o || !o.s || !Number.isFinite(Number(o.s.solBalance))) return false;
       const s = o.s, num = x => Math.max(0, Number(x) || 0);
       paperState = { solBalance: num(s.solBalance), tokenBalance: num(s.tokenBalance), startSol: num(s.startSol) || 1, costBasis: num(s.costBasis), realizedPnl: Number(s.realizedPnl) || 0,
-        mint: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s.mint || '') ? s.mint : '', sym: String(s.sym || '').slice(0, 20), lastPx: num(s.lastPx) };
+        mint: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s.mint || '') ? s.mint : '', sym: String(s.sym || '').slice(0, 20), lastPx: num(s.lastPx),
+        curPnl: Number(s.curPnl) || 0, curCost: num(s.curCost),
+        closed: (Array.isArray(s.closed) ? s.closed : []).filter(x => x && Number.isFinite(Number(x.t)) && Number.isFinite(Number(x.pnl))).slice(-500)
+          .map(x => ({ t: Number(x.t), pnl: Number(x.pnl), pct: Number(x.pct) || 0, sym: String(x.sym || '').slice(0, 20) })) };
       paperTp1Done = !!o.tp1;
       const box = document.createElement('div'); box.innerHTML = String(o.log || '');
       box.querySelectorAll('script,img,iframe,[onerror],[onload]').forEach(x => x.remove());   // our own log, but never run anything from storage
@@ -1784,7 +1939,7 @@
   function resetPaper(){
     paperTp1Done = false;
     const start = Math.max(0, Number($('paperStart').value) || 1);
-    paperState = { solBalance: start, tokenBalance: 0, startSol: start, costBasis: 0, realizedPnl: 0, mint: '', sym: '', lastPx: 0 };
+    paperState = { solBalance: start, tokenBalance: 0, startSol: start, costBasis: 0, realizedPnl: 0, mint: '', sym: '', lastPx: 0, curPnl: 0, curCost: 0, closed: [] };
     $('paperLog').innerHTML = '<div class="feed-empty">Nog geen paper-trades.</div>';
     renderPaperPanel(); savePaper();
   }
@@ -1798,6 +1953,8 @@
     row.innerHTML = '<span class="tag ' + tagClass + '">' + esc(type) + '</span><span>' + esc(msg) + '</span><span class="t">' + new Date().toLocaleTimeString('nl-NL') + '</span>';
     el.prepend(row);
     while (el.children.length > 60) el.removeChild(el.lastChild);
+    if (/^Overgeslagen/.test(msg)) ovAct('RISK', 'paper ' + type + ': ' + msg.replace(/^Overgeslagen:\s*/, 'overgeslagen — '));
+    else if (type === 'FOUT') ovAct('RISK', 'paper fout: ' + msg);
   }
   function setPnlCell(id, sol, pct){
     const el = $(id);
@@ -1876,8 +2033,11 @@
     paperState.solBalance = clamp0(paperState.solBalance - spend);
     paperState.tokenBalance += tokensBought;
     paperState.costBasis += spend;   // SOL now tied up in the open position
+    if (!(paperState.curCost > 0)) paperState.curPnl = 0;
+    paperState.curCost = (paperState.curCost || 0) + spend;
     paperState.mint = chartToken(); paperState.lastPx = price;
     paperState.sym = (pairInfo && pairInfo.baseToken && String(pairInfo.baseToken.symbol || '').slice(0, 20)) || '';
+    ovAct('KOOP', 'paper ' + (paperState.sym || '?') + ' · ' + spend.toFixed(4) + ' SOL @ $' + fmtPrice(price));
     logPaper('BUY', (paperState.sym ? paperState.sym + ' · ' : '') + spend.toFixed(4) + ' SOL → ' + tokensBought.toLocaleString('nl-NL', { maximumFractionDigits: 2 }) + ' tokens @ $' + fmtPrice(price));
     renderPaperPanel(); savePaper();
   }
@@ -1899,9 +2059,15 @@
     paperState.solBalance += solReceived;
     paperState.costBasis = clamp0(paperState.costBasis - costRemoved);
     paperState.realizedPnl += tradeResult;
-    if (paperState.tokenBalance === 0){ paperState.costBasis = 0; paperState.mint = ''; paperState.lastPx = 0; } // fully closed, clear any float residue
+    paperState.curPnl = (paperState.curPnl || 0) + tradeResult;
+    if (paperState.tokenBalance === 0){   // fully closed: one finished trade for the overview, clear any float residue
+      paperState.closed.push({ t: Date.now(), pnl: paperState.curPnl, pct: paperState.curCost > 0 ? paperState.curPnl / paperState.curCost * 100 : 0, sym: paperState.sym || '' });
+      if (paperState.closed.length > 500) paperState.closed.splice(0, paperState.closed.length - 500);
+      paperState.costBasis = 0; paperState.mint = ''; paperState.lastPx = 0; paperState.curPnl = 0; paperState.curCost = 0;
+    }
     const pnlStr = ' (' + (tradeResult >= 0 ? '+' : '') + tradeResult.toFixed(4) + ' SOL)';
     logPaper(label || 'SELL', amount.toLocaleString('nl-NL', { maximumFractionDigits: 2 }) + ' tokens → ' + solReceived.toFixed(4) + ' SOL @ $' + fmtPrice(price) + pnlStr);
+    ovAct(tradeResult >= 0 ? 'WINST' : 'VERLIES', 'paper ' + (label || 'SELL') + ' ' + (paperState.sym || symNow()) + pnlStr);
     renderPaperPanel(); savePaper();
   }
   // TP1 = partial exit (same fraction the strategy/backtest uses); every other exit closes the whole position
@@ -2007,6 +2173,7 @@
     const row = document.createElement('div');
     row.className = 'feed-item';
     const tagClass = type === 'SELL' || type === 'SL' ? 'SELL' : (type === 'BUY' ? 'BUY' : 'FLIP');
+    ovAct(type === 'BUY' ? 'KOOP' : (type === 'SELL' || type === 'SL') ? 'VERKOOP' : 'ECHT', 'echt: ' + msg);
     const sigHtml = sig ? ' <a href="https://solscan.io/tx/' + esc(sig) + '" target="_blank" rel="noopener" style="color:var(--accent)">bekijk</a>' : '';
     row.innerHTML = '<span class="tag ' + tagClass + '">' + esc(type) + '</span><span>' + esc(msg) + sigHtml + '</span><span class="t">' + new Date().toLocaleTimeString('nl-NL') + '</span>';
     el.prepend(row);
@@ -2333,7 +2500,7 @@
       // show the cached chart for this timeframe right away (no trading on it), then fetch fresh data
       const cachedBars = barsCache.get(key);
       if (cachedBars && cachedBars.length){
-        lastMode = 'live'; lastLiveCtx = { network, poolAddress, unit, agg, tokenAddress };
+        lastMode = 'live'; lastLiveCtx = { network, poolAddress, unit, agg, tokenAddress }; ovPing();
         resetSession(); setPair(pair); render(cachedBars);
         setStatus('Getoond uit geheugen — bijwerken…');
       }
@@ -2404,7 +2571,7 @@
       if (fresh) setPair(fresh.pair);
       if (bars.length){
         barsCache.set(c.poolAddress + '|' + c.unit + '|' + c.agg, bars);
-        render(bars);
+        render(bars); ovPing();
         if (Date.now() > statusHoldUntil && !$('loadBtn').disabled) setStatus('Bijgewerkt · ' + new Date().toLocaleTimeString('nl-NL'), 'ok');
       }
     } catch (err){ if (Date.now() > statusHoldUntil && !$('loadBtn').disabled) setStatus('Auto-ververs mislukt: ' + err.message, 'err'); }
@@ -2468,7 +2635,7 @@
     saveWatchlist(); renderWatchlist();
   }
   async function refreshWatchPrices(){
-    if (!watchlist.length) return;
+    if (!watchlist.length || document.hidden) return;   // hidden tab: nobody sees the watchlist prices
     try {
       // DexScreener accepts up to 30 addresses in one request
       const addrs = watchlist.slice(0, 30).map(w => w.addr);
@@ -2542,7 +2709,7 @@
       if (lastLiveCtx !== c) return;
       const px = Number(r.pair.priceUsd);
       if (!(px > 0)) return;
-      setPair(r.pair);
+      setPair(r.pair); ovPing();
       // the live line already moves the candle every second (Jupiter); two sources at once would make it flicker
       const llFresh = $('llOn').checked && LL.ticks.length && Date.now() - LL.ticks[LL.ticks.length - 1].t < 4000 && LL.mint === c.tokenAddress;
       if (!llFresh){ lastTick = { price: px, t: Date.now(), mint: c.tokenAddress }; applyTick(px, c.tokenAddress); }
@@ -2562,7 +2729,13 @@
   // Display only — signals and the bot keep using the real candles.
   const LL = { ticks: [], disp: null, yMin: null, yMax: null, src: '', jupBlockUntil: 0, busy: false, mint: null, lastFrame: 0, lastTxt: 0, fails: 0 };
   function llReset(){ LL.ticks = []; LL.disp = null; LL.yMin = LL.yMax = null; LL.fails = 0; }
-  function llVisible(){ return $('llOn').checked && $('liveLine').offsetParent !== null; }
+  // on screen? (scrolled away or another page → no drawing and no price calls; checked by the browser, not every frame)
+  const llSeen = { line: true, chart: true };
+  if ('IntersectionObserver' in window){
+    const io = new IntersectionObserver(es => es.forEach(e => { llSeen[e.target.id === 'liveLine' ? 'line' : 'chart'] = e.isIntersecting; }), { rootMargin: '150px 0px' });
+    io.observe($('liveLine')); io.observe($('chart'));
+  }
+  function llVisible(){ return $('llOn').checked && (llSeen.line || llSeen.chart) && $('liveLine').offsetParent !== null; }
   async function llPrice(c){
     const mint = c.tokenAddress;
     // 1) Jupiter: price from the latest swaps, updates fast
@@ -2630,10 +2803,11 @@
     const cv = $('liveLine');
     const want = $('llOn').checked ? '' : 'none';
     if ($('liveLineWrap').style.display !== want) $('liveLineWrap').style.display = want;
-    if (!llVisible()) return;
+    if (!llSeen.line || !$('llOn').checked) return;   // off screen: nothing to draw (cheap check, no layout)
     // 30 frames per second (20 on a phone) still looks smooth and costs about half the battery of 60
     if (ts - (LL.lastDraw || 0) < LL_FRAME_MS) return;
     LL.lastDraw = ts;
+    if (cv.offsetParent === null) return;   // another page is open
     const dt = Math.min(100, ts - (LL.lastFrame || ts)); LL.lastFrame = ts;
     const dpr = window.devicePixelRatio || 1;
     const W = cv.clientWidth, H = cv.clientHeight;
@@ -3054,7 +3228,7 @@
     const extra = [];
     const stage2 = [];
     results.slice(0, 10).forEach(r => [[' · laten lopen', { letRun: true }], [' · herinstap', { useCont: true }], [' · laten lopen + herinstap', { letRun: true, useCont: true }],
-      [' · zonder max-verlies/snel uit', { maxLossPct: 0, quickBars: 0 }], [' · zonder SOL-filter', { marketOk: null }], [' · max 3% verlies', { maxLossPct: 3, lossMode: 'skip' }], [' · max 8% verlies', { maxLossPct: 8, lossMode: 'skip' }], [' · snel uit na 3', { quickBars: 3 }], [' · zonder patroonfilter', { usePatterns: false }], [' · trend-kwaliteit ≥ 0.3', { minEr: 0.3 }]].forEach(([nm2, v]) => stage2.push([r, nm2, v])));
+      [' · zonder max-verlies/snel uit', { maxLossPct: 0, quickBars: 0 }], [' · zonder SOL-filter', { marketOk: null }], [' · max 3% verlies', { maxLossPct: 3, lossMode: 'skip' }], [' · max 8% verlies', { maxLossPct: 8, lossMode: 'skip' }], [' · snel uit na 3', { quickBars: 3 }], [' · zonder patroonfilter', { usePatterns: false }], [' · zonder trend-kwaliteit', { minEr: 0 }]].forEach(([nm2, v]) => stage2.push([r, nm2, v])));
     for (let i = 0; i < stage2.length; i++){
       const [r, nm2, v] = stage2[i];
       const r2 = evalP(Object.assign({}, r.p, v));
@@ -3233,6 +3407,7 @@
       }
       st.textContent = 'Klaar · ' + rdRows.length + ' coins · ' + new Date().toLocaleTimeString('nl-NL') + ' · "Strategie" = resultaat van jouw instellingen op de laatste ± 300 candles, kosten ' + p.costPct + '% per trade. Klik op een kolomkop om te sorteren.';
       st.className = 'note ok';
+      ovAct('SCAN', 'radar: ' + rdRows.length + ' coins bekeken' + (fresh.length ? ' · verse BUY op ' + fresh.slice(0, 4).map(r => r.sym).join(', ') : ' · geen verse BUY'));
       fresh.forEach(r => {
         const key = r.token + '-' + r.sigTime;   // one alert per BUY signal
         if (rdAlerted.has(key)) return;
@@ -3270,13 +3445,13 @@
     if (on && $('dashView').style.display !== 'none') setDashMode(false);
     document.querySelector('.wrap').classList.toggle('pick-mode', on);
     $('pickView').style.display = on ? '' : 'none';
-    $('pickNavBtn').textContent = on ? '📈 Terug naar terminal' : '🏆 Coins voor de bot';
+    syncTabs();
     if (on && location.hash !== '#coins') history.replaceState(null, '', '#coins');
     if (!on && location.hash === '#coins') history.replaceState(null, '', location.pathname + location.search);
     if (!on) setTimeout(loadChartIfTerminal, 0);   // back to the terminal: load the chart we skipped at start
     if (!on && chart) setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
   }
-  $('pickNavBtn').addEventListener('click', () => setPickMode($('pickView').style.display === 'none'));
+  $('pickNavBtn').addEventListener('click', () => { if ($('pickView').style.display === 'none') setPickMode(true); });
   if (location.hash === '#coins') setPickMode(true);
 
   let pkRows = [], pkSeq = 0;
@@ -3544,6 +3719,7 @@
       if (pd.pending.length > 600) pd.pending = pd.pending.slice(-600);
       pdSave();
       st.textContent = 'Klaar · ' + pdRows.length + ' coins gescoord' + (learned ? ' · ' + learned + ' oude voorspelling(en) gecontroleerd en van geleerd' : '') + ' · ' + new Date().toLocaleTimeString('nl-NL') + ' · klik op een coin om hem te openen';
+      ovAct('SCAN', 'kansen: ' + pdRows.length + ' coins gescoord' + (pdRows.length ? ' · top ' + pdRows.slice(0, 3).map(r => r.sym + ' ' + Math.round(r.s * 100)).join(', ') : '') + (learned ? ' · ' + learned + ' uitkomsten geleerd' : ''));
       st.className = 'note ok';
     } catch (e){ st.textContent = 'Scan mislukt: ' + e.message; st.className = 'note down'; }
     finally { pdBusy = false; $('pdScanBtn').disabled = false; heavyJobs = Math.max(0, heavyJobs - 1); pdRender(); }
@@ -3554,7 +3730,7 @@
     if (on && $('dashView').style.display !== 'none') setDashMode(false);
     document.querySelector('.wrap').classList.toggle('pred-mode', on);
     $('predView').style.display = on ? '' : 'none';
-    $('predNavBtn').textContent = on ? '📈 Terug naar terminal' : '🔮 Kansen';
+    syncTabs();
     if (on && location.hash !== '#kansen') history.replaceState(null, '', '#kansen');
     if (!on && location.hash === '#kansen') history.replaceState(null, '', location.pathname + location.search);
     if (!on) setTimeout(loadChartIfTerminal, 0);   // back to the terminal: load the chart we skipped at start
@@ -3568,7 +3744,7 @@
   }
   pdLoad();
   $('pdHorizonTxt').textContent = $('pdHorizon').selectedOptions[0].text;
-  $('predNavBtn').addEventListener('click', () => setPredMode($('predView').style.display === 'none'));
+  $('predNavBtn').addEventListener('click', () => { if ($('predView').style.display === 'none') setPredMode(true); });
   $('pdScanBtn').addEventListener('click', () => { pdScan(); });
   $('pdAuto').addEventListener('change', pdSetupAuto);
   $('pdHorizon').addEventListener('change', () => { $('pdHorizonTxt').textContent = $('pdHorizon').selectedOptions[0].text; });
@@ -3739,6 +3915,7 @@
       }
       wlSave();
       st.textContent = errs.length ? '⚠️ ' + errs.join(' · ') : 'Bijgewerkt ' + new Date().toLocaleTimeString('nl-NL') + (n ? ' · ' + n + ' nieuwe trade(s)' : ' · niets nieuws');
+      wl.feed.filter(f => f.fresh && !f.ov).slice(0, 6).forEach(f => { f.ov = 1; ovAct('WALVIS', wlName(f.wallet) + ' ' + (f.side === 'BUY' ? 'koopt' : 'verkoopt') + ' ' + symOf(f.mint) + (f.sol ? ' · ' + Number(f.sol).toFixed(2) + ' SOL' : '')); });
       st.className = 'note ' + (errs.length ? 'down' : 'ok');
     } finally { wlBusy = false; $('wlRefresh').disabled = false; wlRender(); }
   }
@@ -3908,7 +4085,7 @@
     if (on){ if ($('pickView').style.display !== 'none') setPickMode(false); if ($('predView').style.display !== 'none') setPredMode(false); if ($('dashView').style.display !== 'none') setDashMode(false); }
     document.querySelector('.wrap').classList.toggle('wallet-mode', on);
     $('walletView').style.display = on ? '' : 'none';
-    $('walletNavBtn').textContent = on ? '📈 Terug naar terminal' : '🐋 Wallets';
+    syncTabs();
     if (on && location.hash !== '#wallets') history.replaceState(null, '', '#wallets');
     if (!on && location.hash === '#wallets') history.replaceState(null, '', location.pathname + location.search);
     if (!on) setTimeout(loadChartIfTerminal, 0);   // back to the terminal: load the chart we skipped at start
@@ -3920,7 +4097,7 @@
     wlTimer = $('wlAuto').checked ? setInterval(() => { if ($('walletView').style.display !== 'none' && !document.hidden) wlPoll(); }, 30000) : null;
   }
   wlLoad();
-  $('walletNavBtn').addEventListener('click', () => setWalletMode($('walletView').style.display === 'none'));
+  $('walletNavBtn').addEventListener('click', () => { if ($('walletView').style.display === 'none') setWalletMode(true); });
   $('wlAddBtn').addEventListener('click', () => { if (wlAdd($('wlAddr').value, $('wlName').value)){ $('wlAddr').value = ''; $('wlName').value = ''; } });
   $('wlAddr').addEventListener('keydown', e => { if (e.key === 'Enter') $('wlAddBtn').click(); });
   $('wlRefresh').addEventListener('click', () => { wlPoll(); });
@@ -3947,7 +4124,8 @@
   setTimeout(() => { wlSetupAuto(); if (location.hash === '#wallets') setWalletMode(true); }, 0);
 
   // ---------- 📊 dashboard: what are the bots doing? (reads Supabase with the public, read-only key) ----------
-  const DB = { timer: null, chart: null, lines: {}, busy: false, lessons: new Map(), lessonsAt: '', lessonsFull: 0 };
+  const DB = { timer: null, chart: null, lines: {}, busy: false, lessons: new Map(), lessonsAt: '', lessonsFull: 0, ov: null, seenJ: new Set(), staleWarned: false };
+  const esc0 = x => String(x == null ? '' : x).slice(0, 60);   // activity text is rendered with textContent, this only trims
   function dbBase(){ return $('dbUrl').value.trim().replace(/\/+$/, '').replace(/\/rest\/v1$/, ''); }
   // the website may only ever hold the read-only publishable/anon key — never the secret/service_role key
   function dbKeyProblem(k){
@@ -4058,6 +4236,15 @@
       const te = tot('soort:echt'), to = tot('soort:oefen');
       $('dbTotals').innerHTML = [['Oefen-trades (nep-geld)', to], ['Echte trades', te]].map(([lbl, x]) => '<div class="stat"><div class="k">' + lbl + '</div><div class="v ' + (x && x.pnl_sol >= 0 ? 'up' : x ? 'down' : '') + '">' + (x ? solTxt(x.pnl_sol) : '–') + '</div><div class="s">' + (x ? x.n + ' trades · ' + Math.round(x.wins / x.n * 100) + '% winst' : 'nog geen') + '</div></div>').join('');
       dbDrawChart(T);
+      // overview: keep what the bots did (all-time totals from the lessons, last 6 days of trades, best saved trade)
+      if (!errs.length || B.length || T.length){
+        DB.ov = { at: Date.now(), oefen: to || null, echt: te || null, T, best: BEST[0] || null, bots: B };
+        B.forEach(row => { const j = (row.data && row.data.jager) || {}; (j.log || []).slice(0, 8).reverse().forEach(x => {
+          const k = row.bot + '|' + x.t + '|' + x.sym; if (!x.ok || DB.seenJ.has(k) || !(Date.now() - Number(x.t) < 6 * 3600000)) return;
+          DB.seenJ.add(k); ovAct('JAGER', esc0(row.bot) + ': kans ' + esc0(x.sym) + ' · ' + esc0(x.src) + (x.action ? ' → ' + esc0(x.action) : ''), Number(x.t)); }); });
+        if (B.some(row => Date.now() - Date.parse(row.updated_at) > 10 * 60000) && !DB.staleWarned){ DB.staleWarned = true; ovAct('RISK', 'een Railway-bot meldt zich al 10+ min niet — draait hij nog?'); }
+        if (typeof ovRender === 'function') ovRender();
+      }
       // patterns
       const pats = L.filter(x => x.key.startsWith('patroon:')).sort((a, b) => b.pnl_sol / b.n - a.pnl_sol / a.n);
       $('dbPatterns').innerHTML = pats.length ? pats.map(x => { const avg = x.pnl_sol / x.n, w = Math.round(x.wins / x.n * 100);
@@ -4085,7 +4272,7 @@
     if (on){ if ($('pickView').style.display !== 'none') setPickMode(false); if ($('predView').style.display !== 'none') setPredMode(false); if ($('walletView').style.display !== 'none') setWalletMode(false); }
     document.querySelector('.wrap').classList.toggle('dash-mode', on);
     $('dashView').style.display = on ? '' : 'none';
-    $('dashNavBtn').textContent = on ? '📈 Terug naar terminal' : '📊 Dashboard';
+    syncTabs();
     if (on && location.hash !== '#dashboard') history.replaceState(null, '', '#dashboard');
     if (!on && location.hash === '#dashboard') history.replaceState(null, '', location.pathname + location.search);
     if (!on) setTimeout(loadChartIfTerminal, 0);   // back to the terminal: load the chart we skipped at start
@@ -4094,7 +4281,7 @@
     if (on){ dbLoad(); if ($('dbAuto').checked) DB.timer = setInterval(() => { if (!document.hidden) dbLoad(); }, 300000); }
     if (!on && chart) setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
   }
-  $('dashNavBtn').addEventListener('click', () => setDashMode($('dashView').style.display === 'none'));
+  $('dashNavBtn').addEventListener('click', () => { if ($('dashView').style.display === 'none') setDashMode(true); });
   $('dbLoad').addEventListener('click', () => { saveSettings(); DB.lessonsAt = ''; DB.lessonsFull = 0; dbLoad(); });
   ['dbUrl', 'dbKey'].forEach(id => $(id).addEventListener('input', () => { DB.lessonsAt = ''; DB.lessonsFull = 0; DB.lessons = new Map(); }));
   $('dbAuto').addEventListener('change', () => { saveSettings(); if ($('dashView').style.display !== 'none') setDashMode(true); });
@@ -4177,6 +4364,254 @@
     if (lastMode) refreshLive_or_rerender();
   });
   function refreshLive_or_rerender(){ /* recolor markers/lines on next tick */ setTimeout(() => { if (lastMode === 'manual') loadManual(); else refreshLive(); }, 50); }
+
+
+  // ---------- overview: the Claude Bot cockpit (header chips, stat cards, profit line, activity, goal, bot cards) ----------
+  // Only real numbers: the paper trades of this website, or what your Railway bots stored in Supabase. Nothing is invented.
+  var OV = null;
+  function symNow(){ return (pairInfo && pairInfo.baseToken && String(pairInfo.baseToken.symbol || '').slice(0, 20)) || 'coin'; }
+  function ovPing(){ if (OV) OV.lastData = Date.now(); }
+  function ovAct(tag, msg, t){
+    if (!OV){ (ovAct.q = ovAct.q || []).push([tag, msg, t]); return; }
+    OV.log.unshift({ t: Number(t) || Date.now(), tag: String(tag).slice(0, 8), m: String(msg).slice(0, 240) });
+    if (OV.log.length > 150) OV.log.length = 150;
+    OV.logDirty = true; ovSchedule();
+    clearTimeout(OV.saveT); OV.saveT = setTimeout(() => { try { localStorage.setItem(OV_LOG_KEY, JSON.stringify(OV.log.slice(0, 150))); } catch (_){} }, 1500);
+  }
+  const OV_LOG_KEY = 'signaalTerminal.activity.v1', OV_KEY = 'signaalTerminal.overview.v1';
+  OV = { log: [], logDirty: true, raf: 0, chart: null, area: null, lastData: 0, saveT: 0, themeKey: '', dbT: 0, dataKey: '' };
+  try {
+    const saved = JSON.parse(localStorage.getItem(OV_LOG_KEY) || '[]');
+    if (Array.isArray(saved)) OV.log = saved.filter(x => x && Number.isFinite(Number(x.t)) && typeof x.m === 'string').slice(0, 150).map(x => ({ t: Number(x.t), tag: String(x.tag || 'INFO').slice(0, 8), m: x.m.slice(0, 240) }));
+  } catch (_){}
+  (ovAct.q || []).forEach(a => ovAct(a[0], a[1], a[2])); ovAct.q = null;
+  try { const o = JSON.parse(localStorage.getItem(OV_KEY) || 'null'); if (o){ if (o.src) $('ovSrc').value = o.src; if (o.goal > 0) $('ovGoal').value = o.goal; if (o.fold) $('ovView').classList.add('folded'); } } catch (_){}
+  function ovSaveUi(){ try { localStorage.setItem(OV_KEY, JSON.stringify({ src: $('ovSrc').value, goal: Number($('ovGoal').value) || 25, fold: $('ovView').classList.contains('folded') })); } catch (_){} }
+  function ovSchedule(){ if (OV.raf) return; OV.raf = requestAnimationFrame(() => { OV.raf = 0; ovRender(); }); }
+
+  function dbConfigured(){ return /^https:\/\/[a-z0-9-]+\.supabase\.(co|in)$/i.test(dbBase()) && $('dbKey').value.trim().length >= 20 && !dbKeyProblem($('dbKey').value.trim()); }
+  function ovSource(){ const v = $('ovSrc').value; return v === 'bots' || v === 'paper' ? v : (dbConfigured() ? 'bots' : 'paper'); }
+  const ovSolPx = () => Number($('solUsdPrice').value) || 0;
+  function ovMoney(sol, signed){
+    const px = ovSolPx(), sg = signed ? (sol > 0 ? '+' : sol < 0 ? '−' : '') : '';
+    return px > 0 ? sg + '$' + Math.abs(sol * px).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : sg + Math.abs(sol).toFixed(4) + ' SOL';
+  }
+  const ovSol = (sol, signed) => (signed && sol > 0 ? '+' : sol < 0 ? '−' : '') + Math.abs(sol).toFixed(4) + ' SOL';
+  function ovPaperTotal(){
+    const px = ovSolPx(), hasPos = paperState.tokenBalance > 1e-9;
+    if (!hasPos) return paperState.solBalance;
+    const tokPx = paperOnOtherCoin() ? paperState.lastPx : (lastPrice || paperState.lastPx);
+    return px > 0 && tokPx > 0 ? paperState.solBalance + paperState.tokenBalance * tokPx / px : null;
+  }
+  function ovData(){
+    const src = ovSource(), midnight = new Date().setHours(0, 0, 0, 0);
+    if (src === 'paper'){
+      const cl = paperState.closed || [], tot = ovPaperTotal(), w = cl.filter(x => x.pnl > 0).length;
+      const best = cl.reduce((b, x) => x.pnl > 0 && (!b || x.pnl > b.pnl) ? x : b, null);
+      return { src, pts: cl.map(x => ({ t: x.t, pnl: x.pnl })), n: cl.length, wins: w, losses: cl.length - w,
+        k1: 'Winst (paper)', v1: tot == null ? null : tot - paperState.startSol, s1: tot == null ? 'vul de SOL-prijs in' : null,
+        k2: 'Saldo (paper)', v2: tot, s2: 'start ' + paperState.startSol.toFixed(2) + ' SOL' + (paperState.tokenBalance > 1e-9 ? ' · in positie ' + (paperState.sym || '') : ''),
+        best: best && { pnl: best.pnl, sym: best.sym, t: best.t }, today: cl.filter(x => x.t >= midnight).reduce((a, x) => a + x.pnl, 0),
+        badgeBase: paperState.startSol, note: 'paper trading op deze website (simulatie)' };
+    }
+    const d = DB.ov;
+    if (!d) return { src, empty: true, note: dbConfigured() ? 'bots laden…' : 'vul eerst je Supabase-adres en publishable sleutel in bij 📊 Dashboard' };
+    const o = d.oefen || { n: 0, wins: 0, pnl_sol: 0 }, e = d.echt;
+    const pts = (d.T || []).filter(t => t.kind === 'papier' || t.kind === 'nep-kopie').map(t => ({ t: Date.parse(t.created_at), pnl: Number(t.pnl_sol) || 0 })).filter(x => Number.isFinite(x.t));
+    return { src, pts, n: o.n, wins: o.wins, losses: Math.max(0, o.n - o.wins),
+      k1: 'Oefen-winst (bots)', v1: o.pnl_sol, s1: o.n + ' oefen-trades · alles samen',
+      k2: 'Echt geld (bots)', v2: e ? e.pnl_sol : 0, v2signed: true, s2: e ? e.n + ' echte trades · ' + Math.round(e.wins / Math.max(1, e.n) * 100) + '% winst' : 'nog geen echte trades',
+      best: d.best && { pnl: Number(d.best.pnl_sol) || 0, sym: String(d.best.symbol || '?'), t: Date.parse(d.best.created_at), kind: d.best.kind },
+      today: (d.T || []).filter(t => Date.parse(t.created_at) >= midnight).reduce((a, t) => a + (Number(t.pnl_sol) || 0), 0),
+      sixDays: true, note: 'je Railway-bots · bijgewerkt ' + new Date(d.at).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' }) };
+  }
+  function ovSet(id, txt, cls){ const el = $(id); if (el.textContent !== txt) el.textContent = txt; if (cls !== undefined && el.className !== cls) el.className = cls; }
+  function ovRenderCards(D){
+    ovSet('ovSrcNote', D.note || '');
+    if (D.empty){
+      ['ovV1', 'ovV2', 'ovV3', 'ovV4'].forEach(id => ovSet(id, '–'));
+      ['ovS1', 'ovS2', 'ovS3', 'ovS4'].forEach(id => ovSet(id, ' '));
+      ovSet('ovK1', 'Winst'); ovSet('ovK2', 'Saldo'); $('ovRing').setAttribute('stroke-dasharray', '0 113.1'); $('ovRing').style.opacity = '0';
+      ovSet('ovGoalTxt', ''); $('ovGoalBar').style.width = '0%';
+      return;
+    }
+    const cl = v => v > 0 ? 'v up' : v < 0 ? 'v down' : 'v';
+    ovSet('ovK1', D.k1); ovSet('ovV1', D.v1 == null ? '–' : ovMoney(D.v1, true), D.v1 == null ? 'v' : cl(D.v1));
+    ovSet('ovS1', D.s1 || [ovSolPx() > 0 ? ovSol(D.v1, true) : '', D.badgeBase > 0 ? (D.v1 >= 0 ? '+' : '') + (D.v1 / D.badgeBase * 100).toFixed(1) + '% t.o.v. start' : ''].filter(Boolean).join(' · ') || '\u00a0');
+    ovSet('ovK2', D.k2); ovSet('ovV2', D.v2 == null ? '–' : ovMoney(D.v2, !!D.v2signed), D.v2signed ? cl(D.v2) : 'v');
+    ovSet('ovS2', (D.v2 != null && ovSolPx() > 0 && !D.v2signed ? D.v2.toFixed(4) + ' SOL · ' : '') + D.s2);
+    const wr = D.n > 0 ? D.wins / D.n : 0;
+    ovSet('ovV3', D.n > 0 ? Math.round(wr * 100) + '%' : '–', 'v ' + (D.n > 0 ? (wr >= 0.5 ? 'up' : 'down') : ''));
+    ovSet('ovS3', D.n > 0 ? 'W ' + D.wins + ' · L ' + D.losses + (D.n < 30 ? ' · nog weinig' : '') : 'nog geen afgesloten trades');
+    $('ovRing').setAttribute('stroke-dasharray', (wr * 113.1).toFixed(1) + ' 113.1');
+    $('ovRing').style.stroke = D.n > 0 && wr < 0.5 ? 'var(--sell)' : '';
+    $('ovRing').style.opacity = wr > 0 ? '' : '0';
+    ovSet('ovV4', D.best && D.best.pnl > 0 ? ovMoney(D.best.pnl, true) : '–');
+    ovSet('ovS4', D.best && D.best.pnl > 0 ? D.best.sym + (Number.isFinite(D.best.t) ? ' · ' + new Date(D.best.t).toLocaleString('nl-NL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '') + (D.best.kind ? ' · ' + D.best.kind : '') : 'nog geen winst-trade');
+    // goal: today's closed result in dollars (or SOL if the SOL price is unknown)
+    const goal = Math.max(1, Number($('ovGoal').value) || 25), px = ovSolPx();
+    const todayUsd = px > 0 ? D.today * px : null;
+    const frac = todayUsd == null ? 0 : Math.max(0, Math.min(1, todayUsd / goal));
+    $('ovGoalBar').style.width = (todayUsd != null && todayUsd < 0 ? Math.min(100, -todayUsd / goal * 100) : frac * 100).toFixed(1) + '%';
+    $('ovGoalBar').parentElement.classList.toggle('neg', todayUsd != null && todayUsd < 0);
+    ovSet('ovGoalTxt', todayUsd == null ? 'vandaag ' + ovSol(D.today, true) + ' (vul de SOL-prijs in voor dollars)'
+      : 'vandaag ' + (todayUsd >= 0 ? '+' : '−') + '$' + Math.abs(todayUsd).toFixed(2) + ' van $' + goal + ' · ' + Math.round(Math.max(0, todayUsd) / goal * 100) + '%' + (D.src === 'bots' ? ' · oefen + echt' : ''));
+  }
+  function ovRenderChart(D){
+    const pts = D.empty ? [] : D.pts.slice().sort((a, b) => a.t - b.t);
+    const key = D.src + '|' + pts.length + '|' + (pts.length ? pts[pts.length - 1].t : 0) + '|' + ovSolPx() + '|' + (D.badgeBase || '');
+    const tot = pts.reduce((a, x) => a + x.pnl, 0);
+    $('ovBadge').className = 'ov-badge' + (pts.length ? (tot >= 0 ? ' up' : ' down') : '');
+    ovSet('ovBadge', pts.length ? (D.badgeBase > 0 ? (tot >= 0 ? '+' : '') + (tot / D.badgeBase * 100).toFixed(1) + '% · ' : ovSol(tot, true) + ' · ') + pts.length + (pts.length === 1 ? ' trade' : ' trades') + (D.sixDays ? ' · 6 dagen' : '') : 'geen data');
+    $('ovChartEmpty').style.display = pts.length ? 'none' : '';
+    $('ovChart').style.display = pts.length ? '' : 'none';
+    if (!pts.length || typeof LightweightCharts === 'undefined') return;
+    const c = chartColors(), theme = c.text + c.grid + c.up + c.down;
+    if (!OV.chart){
+      try {
+        OV.chart = LightweightCharts.createChart($('ovChart'), { layout: { background: { color: 'transparent' }, textColor: c.text, fontFamily: 'JetBrains Mono, monospace', fontSize: 11 },
+          grid: { vertLines: { visible: false }, horzLines: { color: c.grid + '55' } }, rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false, timeVisible: true },
+          handleScroll: false, handleScale: false, autoSize: true });
+        OV.area = OV.chart.addAreaSeries({ lineWidth: 2, priceLineVisible: false });
+      } catch (_){ OV.chart = null; return; }
+    }
+    if (theme !== OV.themeKey || (tot >= 0) !== OV.up){
+      OV.themeKey = theme; OV.up = tot >= 0;
+      const col = tot >= 0 ? c.up : c.down;
+      try { OV.chart.applyOptions({ layout: { textColor: c.text }, grid: { horzLines: { color: c.grid + '55' } } });
+        OV.area.applyOptions({ lineColor: col, topColor: col + '55', bottomColor: col + '05' }); } catch (_){}
+    }
+    if (key === OV.dataKey) return;
+    OV.dataKey = key;
+    const px = ovSolPx(); let cum = 0, last = 0;
+    const data = pts.map(x => { cum += x.pnl; let time = Math.floor(x.t / 1000); if (time <= last) time = last + 1; last = time; return { time, value: +(px > 0 ? cum * px : cum).toFixed(px > 0 ? 2 : 5) }; });
+    try { OV.area.setData(data); OV.chart.timeScale().fitContent(); } catch (_){}
+  }
+  function ovRenderLog(){
+    if (!OV.logDirty) return; OV.logDirty = false;
+    const el = $('ovLog');
+    ovSet('ovLogN', OV.log.length ? OV.log.length + ' regels' : '');
+    if (!OV.log.length){ el.innerHTML = '<div class="feed-empty">Nog niets gebeurd. Laad een coin, zet paper trading aan of start een scan.</div>'; return; }
+    const frag = document.createDocumentFragment();
+    OV.log.slice(0, 80).forEach(x => {
+      const row = document.createElement('div'); row.className = 'act';
+      const t = document.createElement('span'); t.className = 't'; t.textContent = new Date(x.t).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+      const g = document.createElement('span'); g.className = 'atag ' + x.tag.replace(/[^A-Z]/g, ''); g.textContent = '[' + x.tag + ']';
+      const m = document.createElement('span'); m.className = 'm'; m.textContent = x.m;
+      row.append(t, g, m); frag.append(row);
+    });
+    el.replaceChildren(frag);
+  }
+  // the bot characters: original little robots, one shape per job
+  function ovBotSvg(i, col){
+    const heads = ['<rect x="9" y="14" width="30" height="24" rx="9"/>', '<circle cx="24" cy="26" r="14"/>', '<rect x="7" y="16" width="34" height="20" rx="10"/>',
+      '<path d="M10 22 Q24 6 38 22 L38 32 Q38 38 32 38 L16 38 Q10 38 10 32 Z"/>', '<rect x="10" y="12" width="28" height="27" rx="6"/>', '<path d="M24 11 L39 20 L39 34 L24 41 L9 34 L9 20 Z"/>'];
+    const ant = ['<line x1="24" y1="6" x2="24" y2="14"/><circle cx="24" cy="5" r="2.5"/>', '<line x1="17" y1="8" x2="19" y2="13"/><line x1="31" y1="8" x2="29" y2="13"/>', '<circle cx="24" cy="10" r="3"/>',
+      '<line x1="24" y1="4" x2="24" y2="12"/><path d="M20 5 L28 5"/>', '<line x1="15" y1="6" x2="17" y2="12"/><circle cx="15" cy="5" r="2"/>', '<line x1="24" y1="4" x2="24" y2="11"/><circle cx="24" cy="4" r="2"/>'];
+    return '<svg viewBox="0 0 48 48" width="52" height="52" aria-hidden="true" style="color:' + col + '"><g fill="none" stroke="' + col + '" stroke-width="2.2" stroke-linecap="round">' + ant[i % 6] + '</g>'
+      + '<g fill="color-mix(in srgb, ' + col + ' 16%, var(--panel-2))" stroke="' + col + '" stroke-width="2">' + heads[i % 6] + '</g>'
+      + '<rect class="bot-eye" x="16" y="23" width="5" height="6" rx="2"/><rect class="bot-eye" x="27" y="23" width="5" height="6" rx="2"/>'
+      + '<path d="M19 33 Q24 35.5 29 33" fill="none" stroke="' + col + '" stroke-width="1.8" stroke-linecap="round"/></svg>';
+  }
+  function ovBots(){
+    const now = Date.now(), live = lastMode === 'live' && !!lastLiveCtx;
+    const rdMs = Number($('rdAuto').value) || 0, pdMs = Number($('pdAuto').value) || 0, rdRun = $('rdScanBtn').disabled;
+    const B = (DB.ov && DB.ov.bots) || [], online = B.filter(r => now - Date.parse(r.updated_at) < 10 * 60000);
+    const liveBots = online.filter(r => r.data && r.data.live).length;
+    return [
+      { name: 'Signaal', col: 'var(--accent)', st: live ? 'on' : '', lbl: live ? 'bezig' : 'rust', go: 'chart',
+        txt: live ? 'kijkt naar ' + symNow() + ' · ' + (document.querySelector('.pill.active') || {}).textContent : 'laad een coin om te starten' },
+      { name: 'Paper', col: 'var(--buy)', st: $('paperToggle').checked ? 'on' : '', lbl: $('paperToggle').checked ? 'bezig' : 'uit', go: 'paper',
+        txt: $('paperToggle').checked ? (paperState.tokenBalance > 1e-9 ? 'in positie ' + (paperState.sym || '') : 'wacht op een koopsignaal') : 'zet aan bij Paper trading' },
+      { name: 'Radar', col: 'var(--ema-fast)', st: rdRun || rdMs > 0 ? 'on' : '', lbl: rdRun ? 'scant' : rdMs > 0 ? 'auto' : 'rust', go: 'radar',
+        txt: rdRun ? 'coins aan het scannen…' : rdMs > 0 ? 'scant elke ' + Math.round(rdMs / 60000) + ' min' : 'scan met de knop Scan' },
+      { name: 'Kansen', col: 'var(--accent-2)', st: pdBusy || pdMs > 0 ? 'on' : '', lbl: pdBusy ? 'scant' : pdMs > 0 ? 'auto' : 'rust', go: 'kansen',
+        txt: pd ? (pd.pending.length + ' wachten op controle · ' + pd.done.length + ' geleerd') : '–' },
+      { name: 'Wallets', col: 'var(--warn)', st: wlBusy ? 'on' : '', lbl: wlBusy ? 'kijkt' : wl.list.length ? 'klaar' : 'rust', go: 'wallets',
+        txt: wl.list.length ? 'volgt ' + wl.list.length + ' wallet' + (wl.list.length > 1 ? 's' : '') + (wl.feed.length ? ' · ' + wl.feed.length + ' trades gezien' : '') : 'nog geen wallets gevolgd' },
+      { name: 'Railway', col: 'var(--text)', st: online.length ? (online.length < B.length ? 'on warn' : 'on') : B.length ? 'warn' : '', lbl: online.length ? (liveBots ? 'live' : 'oefent') : B.length ? 'stil' : 'los', go: 'dash',
+        txt: B.length ? online.length + ' van ' + B.length + ' online' + (liveBots ? ' · ' + liveBots + ' handelt echt' : ' · alleen oefenen') : dbConfigured() ? 'nog geen status' : 'koppel Supabase bij Dashboard' },
+    ];
+  }
+  function ovRenderBots(){
+    const list = ovBots(), el = $('ovBots');
+    if (el.children.length !== list.length){
+      el.innerHTML = list.map((b, i) => '<button class="botc" data-go="' + b.go + '">' + ovBotSvg(i, b.col) + '<span class="bn">' + esc(b.name) + '</span><span class="bst"></span><span class="bs"></span></button>').join('');
+    }
+    list.forEach((b, i) => {
+      const card = el.children[i], cls = 'botc ' + b.st;
+      if (card.className !== cls) card.className = cls.trim();
+      const st = card.querySelector('.bst'), tx = card.querySelector('.bs');
+      if (st.textContent !== b.lbl) st.textContent = b.lbl;
+      if (tx.textContent !== b.txt) tx.textContent = b.txt;
+      card.title = b.name + ': ' + b.txt;
+    });
+    const tasks = list.filter(b => /\bon\b/.test(b.st)).length + ($('autoTradeToggle').checked ? 1 : 0);
+    const th = '⚙️ <b>' + tasks + '</b> ' + (tasks === 1 ? 'taak' : 'taken');
+    if (OV.tasksHtml !== th){ OV.tasksHtml = th; $('hcTasks').innerHTML = th; }
+  }
+  function ovRenderChips(){
+    const now = Date.now();
+    const clk = $('hcClock').querySelector('b'), tstr = new Date().toLocaleTimeString('nl-NL');
+    if (clk.textContent !== tstr) clk.textContent = tstr;
+    const llT = LL.ticks.length ? LL.ticks[LL.ticks.length - 1].t : 0;
+    const fresh = lastMode === 'live' && lastLiveCtx && (now - llT < 15000 || now - OV.lastData < 45000);
+    const state = fresh ? '' : lastMode === 'live' ? ' wait' : ' off';
+    const chip = $('hcLive'), cls = 'hchip live' + state, txt = fresh ? 'LIVE' : lastMode === 'live' ? 'WACHT' : lastMode === 'manual' ? 'HANDMATIG' : 'OFFLINE';
+    if (chip.className !== cls) chip.className = cls;
+    const b = chip.querySelector('b'); if (b.textContent !== txt) b.textContent = txt;
+  }
+  function ovRender(){
+    try {
+      ovRenderChips();
+      const terminal = $('ovView').offsetParent !== null && !$('ovView').classList.contains('folded');
+      if (!terminal) return;   // other page, or folded: nothing to draw
+      const D = ovData();
+      ovRenderCards(D); ovRenderChart(D); ovRenderLog(); ovRenderBots();
+    } catch (e){ console.warn('overzicht', e.message); }
+  }
+  // bots as the source: keep their numbers fresh (every 5 min, only while the page is visible, never two at once)
+  function ovDbTick(){
+    if (document.hidden || ovSource() !== 'bots' || !dbConfigured() || DB.busy || DB.timer) return;
+    if (DB.ov && Date.now() - DB.ov.at < 290000) return;
+    if (Date.now() - OV.dbT < 60000) return;   // a failed load is not retried every few seconds
+    OV.dbT = Date.now(); dbLoad().then(ovSchedule);
+  }
+  $('ovSrc').addEventListener('change', () => { ovSaveUi(); OV.dataKey = ''; ovDbTick(); ovSchedule(); });
+  $('ovGoal').addEventListener('change', () => { ovSaveUi(); ovSchedule(); });
+  $('ovFold').addEventListener('click', () => { $('ovView').classList.toggle('folded'); ovSaveUi(); ovSchedule(); });
+  $('ovLogClear').addEventListener('click', () => { OV.log = []; OV.logDirty = true; try { localStorage.removeItem(OV_LOG_KEY); } catch (_){} ovSchedule(); });
+  $('ovBots').addEventListener('click', e => {
+    const b = e.target.closest('.botc'); if (!b) return;
+    const go = b.dataset.go;
+    if (go === 'kansen') return setPredMode(true);
+    if (go === 'wallets') return setWalletMode(true);
+    if (go === 'dash') return setDashMode(true);
+    const target = go === 'chart' ? $('chart') : go === 'radar' ? $('rdScanBtn') : $('paperToggle');
+    const card = target && target.closest('.card');
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  ['paperToggle', 'rdAuto', 'pdAuto', 'autoTradeToggle', 'solUsdPrice', 'dbUrl', 'dbKey'].forEach(id => $(id).addEventListener('change', ovSchedule));
+  let ovTicks = 0;
+  setInterval(() => { if (document.hidden) return; ovRenderChips(); if (++ovTicks % 5 === 0){ ovSchedule(); ovDbTick(); } }, 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden){ ovSchedule(); ovDbTick(); } });
+  window.addEventListener('storage', e => { if (e.key === PAPER_KEY) restorePaper(); });   // another tab traded on paper
+
+  // ---------- page tabs ----------
+  function syncTabs(){
+    const open = [['dashView', 'dashNavBtn'], ['predView', 'predNavBtn'], ['walletView', 'walletNavBtn'], ['pickView', 'pickNavBtn']].filter(([v]) => $(v).style.display !== 'none');
+    ['dashNavBtn', 'predNavBtn', 'walletNavBtn', 'pickNavBtn'].forEach(b => { const on = open.some(x => x[1] === b); $(b).classList.toggle('active', on); $(b).setAttribute('aria-current', on ? 'page' : 'false'); });
+    $('termNavBtn').classList.toggle('active', !open.length); $('termNavBtn').setAttribute('aria-current', open.length ? 'false' : 'page');
+    if (OV) ovSchedule();
+  }
+  $('termNavBtn').addEventListener('click', () => {
+    if ($('dashView').style.display !== 'none') setDashMode(false);
+    if ($('predView').style.display !== 'none') setPredMode(false);
+    if ($('walletView').style.display !== 'none') setWalletMode(false);
+    if ($('pickView').style.display !== 'none') setPickMode(false);
+    syncTabs();
+  });
+  syncTabs();
 
   setupRadarAuto();
   initChart();
