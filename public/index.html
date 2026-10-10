@@ -363,7 +363,7 @@
   <header class="topbar hdr">
     <div class="brand">
       <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40" width="40" height="40"><defs><linearGradient id="bmG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f19a6f"/><stop offset="1" stop-color="#9a6cf0"/></linearGradient></defs><rect x="1" y="1" width="38" height="38" rx="11" fill="url(#bmG)"/><line x1="20" y1="6" x2="20" y2="11" stroke="#1b0f08" stroke-width="2.2" stroke-linecap="round"/><circle cx="20" cy="5.5" r="2.3" fill="#1b0f08"/><rect x="8" y="11" width="24" height="19" rx="7" fill="#1b0f08"/><circle cx="15" cy="20" r="3" fill="#f6c27a"/><circle cx="25" cy="20" r="3" fill="#f6c27a"/><path d="M15 26 Q20 28.5 25 26" stroke="#f6c27a" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg></div>
-      <div><h1>Claude Bot</h1><small>Solana signaal-terminal · paper, radar &amp; bots · versie 11-10a</small></div>
+      <div><h1>Claude Bot</h1><small>Solana signaal-terminal · paper, radar &amp; bots · versie 11-10c</small></div>
     </div>
     <div class="hchips">
       <span class="hchip" id="hcClock" title="Lokale tijd">⏱ <b>--:--:--</b></span>
@@ -1754,9 +1754,19 @@
     const gap = bars.length > 1 ? (bars[bars.length - 1].time - bars[0].time) / (bars.length - 1) : 60;
     let lastSkip = -Infinity;
     const skipShown = (res.skipped || []).filter(sk => barTimes.has(sk.time) && !usedT.has(sk.time)).filter(sk => { if (sk.time - lastSkip <= gap * 3.5){ lastSkip = sk.time; return false; } lastSkip = sk.time; return true; });
+    // what if the filters had been off? the same engine without them — so every grey dot shows what that trade would have done (after costs)
+    let free = null, whatIf = new Map();
+    if ((res.skipped || []).length){
+      try {
+        free = runEngine(bars, Object.assign({}, p, { useTrend: false, useHtf: false, minEr: 0, usePatterns: false, marketOk: null, maxLossPct: 0, minEdge: 0 }));
+        free.trades.forEach(t => whatIf.set(t.entryTime, t));
+      } catch (_){ free = null; }
+    }
+    const wiTxt = t => t ? ' → ' + (t.open ? 'nu ' : '') + (t.ret >= 0 ? '+' : '') + (t.ret * 100).toFixed(1) + '%' : '';
     if (showSkip) skipShown.forEach(sk => {
-      markers.push({ time: sk.time, position: 'belowBar', color: '#7d8590', shape: 'circle',
-        text: 'overgeslagen: ' + (sk.why === 'kosten' ? 'doel ' + sk.target.toFixed(1) + '% < ' + (p.minEdge * p.costPct).toFixed(1) + '%' : sk.why) });
+      const t = whatIf.get(sk.time);
+      markers.push({ time: sk.time, position: 'belowBar', color: t ? (t.ret > 0 ? hexA(c.up, 0.75) : hexA(c.down, 0.75)) : '#7d8590', shape: 'circle',
+        text: 'overgeslagen: ' + (sk.why === 'kosten' ? 'doel ' + sk.target.toFixed(1) + '% < ' + (p.minEdge * p.costPct).toFixed(1) + '%' : sk.why) + wiTxt(t) });
     });
     markers.sort((a, b) => a.time - b.time);
     try { candleSeries.setMarkers(markers); } catch (e){ console.warn('markers', e); }
@@ -1765,11 +1775,16 @@
       const nB = res.events.filter(e => e.type === 'BUY').length;
       const sk = res.skipped || [], why = w => sk.filter(x => x.why === w).length;
       const nPat = sk.filter(x => /^patroon/.test(x.why)).length;
-      const skTxt = sk.length ? ' · ' + sk.length + ' overgeslagen (' + [['kosten', why('kosten')], ['trend', why('trend')], ['grote tf', why('grote tf')], ['patroon', nPat], ['SOL-markt', why('markt (SOL daalt)')]].filter(x => x[1]).map(x => x[1] + ' ' + x[0]).join(', ') + ')' : '';
+      const skTxt = sk.length ? ' · ' + sk.length + ' overgeslagen (' + [['zwakke trend', why('zwakke trend')], ['stop te ver', sk.filter(x => /^stop te ver/.test(x.why)).length], ['SOL-markt', why('markt (SOL daalt)')], ['trend', why('trend')], ['grote tf', why('grote tf')], ['patroon', nPat], ['kosten', why('kosten')]].filter(x => x[1]).map(x => x[1] + ' ' + x[0]).join(', ') + ')' : '';
       ml.textContent = (nB ? nB + ' BUY-signaal/signalen in deze ' + bars.length + ' candles · ▲ BUY · ● TP · ■ SL/SELL'
         : 'Geen BUY-signalen in deze ' + bars.length + ' candles' + (bars.length < 80 ? ' (te weinig candles: de indicatoren hebben ± 25 candles opwarmtijd nodig — kies een kortere timeframe)' : ' met je huidige instellingen')) + skTxt
         + (lastMode === 'live' && lastLiveCtx && lastLiveCtx.unit === 'second' ? secNote(bars) : '')
-        + (why('kosten') > nB ? ' — tip: meet je kosten met je echte inzet (💶) of kies grotere candles' : '');
+        + (why('kosten') > nB ? ' — tip: meet je kosten met je echte inzet (💶) of kies grotere candles' : '')
+        + (free ? (() => {
+          const sum = list => { const done = list.filter(t => !t.open); let e = 1; done.forEach(t => { e *= 1 + t.ret; }); return { n: done.length, w: done.filter(t => t.ret > 0).length, tot: e - 1 }; };
+          const a = sum(res.trades), b = sum(free.trades), f = x => (x.tot >= 0 ? '+' : '') + (x.tot * 100).toFixed(1) + '%';
+          return ' · Vergelijking op deze ' + bars.length + ' candles (na kosten): mét filters ' + a.n + ' trades ' + f(a) + ', zónder filters ' + b.n + ' trades (' + b.w + ' winst) ' + f(b) + '. Een gekleurd bolletje toont wat die overgeslagen trade had gedaan.';
+        })() : '');
     }
 
     if (candleSeries._priceLines) candleSeries._priceLines.forEach(l => candleSeries.removePriceLine(l));
