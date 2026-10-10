@@ -105,7 +105,7 @@ function getParams() {
     lossMode: (process.env.LOSS_MODE || 'skip').trim().toLowerCase() === 'tighten' ? 'tighten' : 'skip',   // skip = skip trades whose stop is further away; tighten = old behaviour
     quickBars: num('QUICK_EXIT_BARS', 0),        // after N candles still under the signal price → sell (0 = off; tests showed it cost money)
     usePatterns: flag('USE_PATTERNS', true),     // skip buys after a big sprint or in a falling trend
-    minEr: num('MIN_ER', 0),                      // optional trend-quality filter (0 = off, e.g. 0.3 = only buy in a clean, steady rise)
+    minEr: num('MIN_ER', 0.3),                    // trend quality: only buy in a clean, steady rise (test 41 coins: losses ~4× smaller; 0 = off)
     slipPct: num('SLIP_PCT', 0.5),               // backtests/practice: buy this % worse and stop-sells this % worse (live fills lag)
     htfLen: 20
   };
@@ -748,7 +748,7 @@ async function evaluateCoin(token){
   results.sort((a, b) => b.rank - a.rank);
   // stage 2: on the 10 best, also try "let profits run", "re-enter", other max-loss and filters
   const extra = [];
-  for (const r of results.slice(0, 10)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }, { maxLossPct: 0, quickBars: 0 }, { maxLossPct: 3, lossMode: 'skip' }, { maxLossPct: 8, lossMode: 'skip' }, { quickBars: 3 }, { usePatterns: false }, { minEr: 0.3 }]){
+  for (const r of results.slice(0, 10)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }, { maxLossPct: 0, quickBars: 0 }, { maxLossPct: 3, lossMode: 'skip' }, { maxLossPct: 8, lossMode: 'skip' }, { quickBars: 3 }, { usePatterns: false }, { minEr: 0 }]){
     const r2 = evalP(Object.assign({}, r.p, v));
     if (r2.train.n >= 8) extra.push(Object.assign(r2, { rank: rankOf(r2.train) }));
   }
@@ -1157,7 +1157,9 @@ const ksScore = x => 1 / (1 + Math.exp(-(ks.b + x.reduce((a, v, i) => a + v * ks
 async function dexPairs(tokens){
   const out = {};
   for (let k = 0; k < tokens.length; k += 30){
-    const data = await fetchJson('https://api.dexscreener.com/latest/dex/tokens/' + tokens.slice(k, k + 30).join(','), 9000, 1);
+    let data = null;
+    try { data = await fetchJson('https://api.dexscreener.com/latest/dex/tokens/' + tokens.slice(k, k + 30).join(','), 9000, 1); }
+    catch (e){ console.error('DexScreener (' + tokens.length + ' coins, deel ' + (k / 30 + 1) + '):', e.message); continue; }   // one failed batch must not cost the whole list
     ((data && data.pairs) || []).forEach(pr => {
       const a = pr.baseToken && pr.baseToken.address; if (!a || pr.chainId !== 'solana') return;
       const l = (pr.liquidity && pr.liquidity.usd) || 0;

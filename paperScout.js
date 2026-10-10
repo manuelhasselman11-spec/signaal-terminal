@@ -93,7 +93,9 @@ function createScout(o){
   /** one round over all practice coins; returns the number of finished practice trades */
   async function round(){
     if (!cfg.on) return 0;
-    if (!Object.keys(st.coins).length || now() - st.pickedAt > cfg.repickH * 3600000){
+    // also re-pick early when there are far fewer coins than asked (an older setting, or a coin list that failed to load) — at most every 30 min
+    const tooFew = Object.keys(st.coins).length < cfg.coins / 2 && now() - st.pickedAt > 1800000;
+    if (!Object.keys(st.coins).length || tooFew || now() - st.pickedAt > cfg.repickH * 3600000){
       try { await pick(); } catch (e){ console.error('oefen: coins kiezen mislukt', e.message); }
     }
     const [unit, agg] = cfg.tf.split(':');
