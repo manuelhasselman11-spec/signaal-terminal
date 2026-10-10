@@ -175,6 +175,9 @@
   .wrap.pick-mode > :not(.topbar):not(#pickView):not(.status-line) { display: none !important; }
   .wrap.pred-mode > :not(.topbar):not(#predView):not(.status-line) { display: none !important; }
   .wrap.wallet-mode > :not(.topbar):not(#walletView):not(.status-line) { display: none !important; }
+  .wrap.dash-mode > :not(.topbar):not(#dashView):not(.status-line) { display: none !important; }
+  .dbgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .dbbot table.bt { font-size: 0.72rem; }
   #pdBody tr { cursor: pointer; }
   #pkBody tr td:first-child { width: 28px; }
   .verdict { font-weight: 700; white-space: nowrap; }
@@ -209,6 +212,8 @@
     width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
     border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 0.8rem;
   }
+  .field input[type=checkbox], .field input[type=radio] { width: auto; padding: 0; }
+  @media (max-width: 640px) { .pill { min-height: 34px; } button, .btnlink { min-height: 36px; } }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
   .checkline { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text); cursor: pointer; }
   .note { font-size: 0.72rem; color: var(--muted); line-height: 1.55; margin-top: 8px; }
@@ -256,7 +261,7 @@
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">S</div>
-      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 09-10 (live-lijn)</small></div>
+      <div><h1>Signaal Terminal</h1><small>EMA / ATR strategie · versie 10-10d (slimmere bot · testtrade)</small></div>
     </div>
     <div class="search">
       <input id="tokenAddr" value="" spellcheck="false" placeholder="Plak token-adres of link (DexScreener / GMGN / pump.fun)…">
@@ -264,6 +269,7 @@
       <button class="ghost icon" id="watchAddBtn" title="Opslaan in watchlist">☆</button>
     </div>
     <button class="ghost" id="predNavBtn" title="Welke coins hebben nu de beste papieren — en leert van de uitkomst">🔮 Kansen</button>
+    <button class="ghost" id="dashNavBtn" title="Wat doen en leren je bots? (uit Supabase)">📊 Dashboard</button>
     <button class="ghost" id="walletNavBtn" title="Volg slimme Solana-wallets: wat kopen de winnaars?">🐋 Wallets</button>
     <button class="ghost" id="pickNavBtn" title="Welke coins passen bij de bot?">🏆 Coins voor de bot</button>
     <button class="ghost icon" id="themeBtn" title="Licht / donker">◐</button>
@@ -292,7 +298,7 @@
       <div id="pdStatus" class="note">Klik op Scan nu. De pagina leert alleen zolang hij openstaat (in deze browser).</div>
       <div id="pdStats" class="note" style="margin-top:8px;"></div>
       <div class="tbl-wrap" style="margin-top:8px;"><table class="bt" id="pdTable" style="display:none;">
-        <thead><tr><th>Coin</th><th>Kans</th><th>Waarom</th><th>5m</th><th>1u</th><th>24u</th><th>Volume 1u</th><th>Kopers 1u</th><th>Liq.</th></tr></thead>
+        <thead><tr><th>Coin</th><th title="Een score van 0 tot 100, nog geen echte kans: pas na 100+ uitkomsten zie je hieronder of hoge scores echt beter waren">Score</th><th>Waarom</th><th>5m</th><th>1u</th><th>24u</th><th>Volume 1u</th><th>Kopers 1u</th><th>Liq.</th></tr></thead>
         <tbody id="pdBody"></tbody></table></div>
       <div class="row" style="margin-top:10px;"><button class="ghost" id="pdReset">Leergeheugen wissen</button></div>
     </div>
@@ -335,6 +341,35 @@
       </div>
       <div class="tbl-wrap"><table class="bt" id="wlFoundTbl" style="display:none;"><thead><tr><th>Wallet</th><th>Coins</th><th>Winst verkocht</th><th>Nog vast</th><th>Ingezet</th><th>Trades</th><th>Score</th><th></th></tr></thead><tbody id="wlFound"></tbody></table></div>
     </div>
+  </div>
+
+
+  <!-- dashboard: what are the bots doing (read-only from Supabase) -->
+  <div id="dashView" style="display:none;">
+    <div class="card" style="margin-bottom:16px;">
+      <h2>📊 Dashboard — wat doen je bots?</h2>
+      <div class="note" style="margin-bottom:10px;">Alles wat je bots doen en leren, rechtstreeks uit je Supabase: klaar voor echt geld?, oefen-resultaten, de kansen van de Jager, welke patronen werken en wat de bot niet meer doet. Deze pagina kan alleen <b>lezen</b> — gebruik daarom de <b>publishable</b> (anon) sleutel, nooit de secret.</div>
+      <div class="row" style="align-items:flex-end; margin-bottom:8px;">
+        <div class="field" style="flex:1; min-width:220px;"><label>Supabase-adres</label><input id="dbUrl" placeholder="https://jouwproject.supabase.co" spellcheck="false"></div>
+        <div class="field" style="flex:1; min-width:220px;"><label>Publishable (anon) sleutel</label><input id="dbKey" placeholder="sb_publishable_… of eyJ…" spellcheck="false"></div>
+        <button id="dbLoad">↻ Laden</button>
+        <label class="checkline"><input type="checkbox" id="dbAuto" checked> Elke 5 minuten verversen</label>
+      </div>
+      <div id="dbStatus" class="note">Vul je adres en sleutel in en klik op Laden.</div>
+    </div>
+    <div class="stats" id="dbTotals"></div>
+    <div class="dbgrid" id="dbBots"></div>
+    <div class="card" style="margin:16px 0;">
+      <h2>Resultaat per trade opgeteld · laatste 6 dagen</h2>
+      <div id="dbChart" style="height:240px;"></div>
+      <div class="note">Oranje = oefen-trades (nep-geld), groen = echte trades. Verliezende trades ouder dan een week worden opgeruimd (de les blijft), daarom toont deze grafiek alleen de laatste dagen.</div>
+    </div>
+    <div class="dbgrid">
+      <div class="card"><h2>📐 Welke patronen werken?</h2><div class="tbl-wrap"><table class="bt"><thead><tr><th>Patroon</th><th>Trades</th><th>Winst</th><th>Gem. SOL</th></tr></thead><tbody id="dbPatterns"></tbody></table></div></div>
+      <div class="card"><h2>🚫 Dit doet de bot niet meer</h2><div class="tbl-wrap"><table class="bt"><thead><tr><th>Wat</th><th>Verlies / trades</th><th>Totaal</th></tr></thead><tbody id="dbBad"></tbody></table></div>
+        <h2 style="margin-top:14px;">✅ Werkt goed</h2><div class="tbl-wrap"><table class="bt"><thead><tr><th>Wat</th><th>Winst / trades</th><th>Totaal</th></tr></thead><tbody id="dbGood"></tbody></table></div></div>
+    </div>
+    <div class="card" style="margin-top:16px;"><h2>🏆 Beste bewaarde trades</h2><div class="tbl-wrap"><table class="bt"><thead><tr><th>Coin</th><th>Soort</th><th>Signaal</th><th>Uit</th><th>Winst</th><th>Wanneer</th></tr></thead><tbody id="dbBest"></tbody></table></div></div>
   </div>
 
   <!-- coin choice page -->
@@ -505,13 +540,22 @@
         <div class="feed" id="paperLog"><div class="feed-empty">Nog geen paper-trades.</div></div>
       </div>
 
-      <!-- wallet -->
+      <!-- the website can trade too, but only on purpose: the Railway bot has far more protection -->
       <div class="card">
+        <h2>Handelen vanuit de website</h2>
+        <label class="checkline"><input type="checkbox" id="expertTrade"> Expert: deze website mag zelf echte swaps doen (Phantom)</label>
+        <div class="note">Je <b>Railway-bot</b> handelt veiliger: RugCheck, kopersdruk, SOL-filter, cloud-lessen, verlieslimieten en echte kostenmeting. De website-bot heeft die bescherming niet. Zet dit alleen bewust aan — en nooit tegelijk met je Railway-bot op dezelfde coin. Wordt bij herladen altijd weer uitgezet.</div>
+      </div>
+      <!-- wallet -->
+      <div class="card" id="phantomCard" style="display:none;">
         <h2>Echte bot (Phantom, echt geld)</h2>
         <div class="row" style="margin-bottom:8px;"><button class="ghost" id="connectBtn">Verbind Phantom</button></div>
         <div class="status-line" id="walletStatus" style="margin-bottom:10px;">Niet verbonden.</div>
         <div class="two">
-          <div class="field"><label>Max SOL per buy (cap)</label><input id="maxSolPerBuy" type="number" value="0.05" min="0" step="0.001"></div>
+          <div class="field"><label>Echte inzet per buy (% van SOL-saldo)</label><input id="liveBuyPct" type="number" value="10" min="1" max="100" step="1" title="Los van de paper-instelling. De cap hieronder gaat altijd voor."></div>
+          <div class="field"><label>Max SOL per buy (cap, verplicht)</label><input id="maxSolPerBuy" type="number" value="0.05" min="0.001" step="0.001"></div>
+        </div>
+        <div class="two">
           <div class="field"><label>Slippage (bps)</label><input id="slippageBps" type="number" value="300" min="10" step="10"></div>
         </div>
         <div class="field" style="margin-bottom:12px;"><label>RPC endpoint (eigen RPC aanbevolen)</label><input id="rpcUrl" placeholder="https://api.mainnet-beta.solana.com" spellcheck="false"></div>
@@ -595,11 +639,18 @@
         <div class="field"><label><input type="checkbox" id="useHtf"> Grotere timeframe moet ook stijgen (× candles)</label><input id="htfMult" type="number" value="4" min="2" step="1" title="4 = bij 15m-candles kijkt hij naar 1-uurs-trend"></div>
         <div class="field"><label><input type="checkbox" id="letRun"> Winst laten lopen: bij TP2 maar % verkopen</label><input id="runFrac" type="number" value="50" min="5" max="95" step="5" title="rest loopt door met trailing stop (minstens TP1 vast)"></div>
         <div class="field"><label><input type="checkbox" id="useCont"> Herinstap: na winst opnieuw kopen als de trend doorzet</label></div>
+        <div class="field"><label>Max. verlies per trade (%, 0 = uit)</label><input id="maxLossPct" type="number" value="5" min="0" step="0.5" title="Overslaan: koop alleen als de natuurlijke stop binnen dit % ligt. Krapper zetten: trek de stop op tot dit % (oud gedrag, zette de stop in gewone ruis)."></div>
+        <div class="field"><label>Bij te ver weg liggende stop</label><select id="lossMode"><option value="skip" selected>Trade overslaan (aanbevolen)</option><option value="tighten">Stop krapper zetten (oud)</option></select></div>
+        <div class="field"><label>Snel uit: na N candles nog onder signaalprijs → verkopen (0 = uit)</label><input id="quickBars" type="number" value="0" min="0" step="1"></div>
+        <div class="field"><label><input type="checkbox" id="useMarket" checked> SOL-marktfilter: niet kopen als SOL in een 1-uurs-daaltrend zit</label><div class="note" id="mktNote" style="margin:4px 0 0;">SOL-trend laden…</div></div>
+        <div class="field"><label><input type="checkbox" id="usePatterns" checked> Patroonfilter: niet kopen na een sprint of in een dalende trend</label></div>
+        <div class="field"><label>Trend-kwaliteit minimaal (0 = uit, bijv. 0.3)</label><input id="minEr" type="number" value="0" min="0" max="1" step="0.05" title="Netto stijging gedeeld door alle beweging over 20 candles. Hoger = alleen kopen in een rustige, nette stijging (minder trades). In Railway: MIN_ER."></div>
         <div class="field"><label>Sweep: vergelijk N candles terug</label><input id="sweepLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: N-candle high</label><input id="donLen" type="number" value="20" min="3"></div>
         <div class="field"><label>Breakout: volume × gemiddelde</label><input id="volMult" type="number" value="1.5" min="0.5" step="0.1"></div>
         <div class="field"><label>Trailing stop × ATR (na TP1)</label><input id="trailMult" type="number" value="2.5" min="0" step="0.1"></div>
         <div class="field"><label>TP1: deel van positie</label><input id="partialFrac" type="number" value="0.5" min="0.1" max="1" step="0.1"></div>
+        <div class="field"><label>Vertraging/stop-slippage (%): koop zoveel duurder, stop-verkoop zoveel lager</label><input id="slipPct" type="number" value="0.5" min="0" step="0.1"></div>
         <div class="field"><label>Kosten + slippage per trade (%)</label><input id="costPct" type="number" value="1" min="0" step="0.1"></div>
         <div class="field"><label>Cooldown na exit (candles, trend/breakout)</label><input id="cooldown" type="number" value="3" min="0" step="1"></div>
       </div>
@@ -656,11 +707,11 @@
     let res;
     try { res = await fetchWithTimeout(JUP_BASE + path, opts, ms); }
     catch (e){ if (!e.network) throw e; res = null; }
-    if (res && res.status !== 404 && res.status !== 410 && res.status !== 403) return res;
+    if (res && ![401, 403, 404, 410, 429].includes(res.status) && res.status < 500) return res;
     return fetchWithTimeout(JUP_FALLBACK + path, opts, ms);
   }
 
-  let chart, candleSeries, fastSeries, slowSeries;
+  let chart, candleSeries, fastSeries, slowSeries, secLine;
   let refreshTimer = null;
   let seenEventKeys = new Set();
   let isFirstRenderOfSession = true;
@@ -714,7 +765,13 @@
   function fmtTs(sec){
     return new Date(sec * 1000).toLocaleString('nl-NL', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
   }
-  function cssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  // colours are read once per theme (the live line asked ~180×/s before)
+  const cssCache = new Map();
+  function cssVar(name){
+    const key = (document.documentElement.dataset.theme || '') + (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'D' : 'L') + name;
+    if (!cssCache.has(key)) cssCache.set(key, getComputedStyle(document.documentElement).getPropertyValue(name).trim());
+    return cssCache.get(key);
+  }
   function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
   // ---------- chart ----------
@@ -753,6 +810,8 @@
     fastSeries = chart.addLineSeries({ color: c.fast, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
     slowSeries = chart.addLineSeries({ color: c.slow, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
     volSeries = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false });
+    // second charts: many seconds have no trade (flat candle, invisible) — this line always shows where the price is
+    secLine = chart.addLineSeries({ color: c.text, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: true, lineType: 2 });
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.86, bottom: 0 } });
 
     rsiChart = LightweightCharts.createChart($('rsiChart'), {
@@ -784,9 +843,12 @@
     candleSeries.applyOptions({ priceFormat: fmt });
     fastSeries.applyOptions({ priceFormat: fmt });
     slowSeries.applyOptions({ priceFormat: fmt });
+    if (secLine) secLine.applyOptions({ priceFormat: fmt });
   }
 
-  function setStatus(msg, cls){
+  let statusHoldUntil = 0;
+  function setStatus(msg, cls, holdMs){
+    statusHoldUntil = holdMs ? Date.now() + holdMs : 0;
     const el = $('statusLine');
     el.textContent = msg;
     el.className = 'status-line' + (cls ? (' ' + cls) : '');
@@ -825,6 +887,100 @@
     return rsi;
   }
 
+
+  // <shared:patterns> — generated from patterns.js by build-web.js, do not edit here
+  const PATTERN_NAMES = {
+    trend_omhoog: 'trend omhoog', hogere_bodems: 'hogere bodems', dip_in_trend: 'dip in trend', squeeze_uitbraak: 'uitbraak na rust',
+    bull_flag: 'bull flag', dubbele_bodem: 'dubbele bodem', volume_piek: 'volume-piek', te_ver_gestegen: 'te ver gestegen', dalende_trend: 'dalende trend',
+  };
+  const PATTERN_BAD = ['te_ver_gestegen', 'dalende_trend'];
+  const patCache = new WeakMap();
+  function patPrep(bars){
+    let c = patCache.get(bars);
+    if (c) return c;
+    const n = bars.length, C = bars.map(b => b.close), H = bars.map(b => b.high), L = bars.map(b => b.low), V = bars.map(b => b.volume || 0);
+    const ema = len => { const k = 2 / (len + 1), out = new Array(n); out[0] = C[0]; for (let i = 1; i < n; i++) out[i] = C[i] * k + out[i - 1] * (1 - k); return out; };
+    const tr = bars.map((b, i) => i ? Math.max(b.high - b.low, Math.abs(b.high - C[i - 1]), Math.abs(b.low - C[i - 1])) : b.high - b.low);
+    const atr = new Array(n); let s = 0;
+    for (let i = 0; i < n; i++){ s += tr[i]; if (i >= 14) s -= tr[i - 14]; atr[i] = s / Math.min(i + 1, 14); }
+    // pivot lows: lower than 2 candles on each side (only known 2 candles later — used with that delay)
+    const piv = [];
+    for (let i = 2; i < n - 2; i++) if (L[i] < L[i - 1] && L[i] < L[i - 2] && L[i] <= L[i + 1] && L[i] <= L[i + 2]) piv.push(i);
+    c = { n, C, H, L, V, e20: ema(20), e50: ema(50), atr, piv };
+    patCache.set(bars, c);
+    return c;
+  }
+  /** patterns present on candle i (that candle is closed) */
+  function patternsAt(bars, i){
+    const d = patPrep(bars), { C, H, L, V, e20, e50, atr } = d, out = [];
+    if (i < 60 || i >= d.n) return out;
+    const green = C[i] > bars[i].open;
+    const up = e20[i] > e50[i] && e50[i] > e50[i - 5];
+    if (up) out.push('trend_omhoog');
+    if (e20[i] < e50[i] && e50[i] < e50[i - 5]) out.push('dalende_trend');
+    // swing lows that are already confirmed at i (pivot + 2 candles)
+    const lows = d.piv.filter(k => k + 2 <= i && k >= i - 40).slice(-3);
+    if (lows.length === 3 && L[lows[0]] < L[lows[1]] && L[lows[1]] < L[lows[2]]) out.push('hogere_bodems');
+    if (up && green && L[i] <= e20[i] + 0.5 * atr[i] && C[i] > e20[i]) out.push('dip_in_trend');
+    // quiet range (narrow compared with the 100 candles before), then a close above it
+    let hi20 = -Infinity, lo20 = Infinity;
+    for (let k = i - 20; k < i; k++){ hi20 = Math.max(hi20, H[k]); lo20 = Math.min(lo20, L[k]); }
+    const w = (hi20 - lo20) / C[i - 1];
+    const widths = [];
+    for (let k = Math.max(20, i - 100); k < i - 20; k += 5){ let a = -Infinity, b = Infinity; for (let j = k - 20; j < k; j++){ a = Math.max(a, H[j]); b = Math.min(b, L[j]); } widths.push((a - b) / C[k - 1]); }
+    widths.sort((x, y) => x - y);
+    if (widths.length >= 5 && w < widths[Math.floor(widths.length / 2)] * 0.7 && C[i] > hi20) out.push('squeeze_uitbraak');
+    // bull flag: strong push up, small calm pullback, then a break above the flag
+    for (let k = i - 12; k <= i - 3; k++){
+      if (k < 8) continue;
+      const base = Math.min(L[k - 6], L[k - 5], L[k - 4], L[k - 3]);
+      const push = H[k] / base - 1;
+      if (push < 4 * atr[k] / C[k] || push < 0.04) continue;
+      let fl = Infinity, fh = -Infinity, fv = 0, pv = 0;
+      for (let j = k + 1; j < i; j++){ fl = Math.min(fl, L[j]); fh = Math.max(fh, H[j]); fv += V[j]; }
+      for (let j = k - 5; j <= k; j++) pv += V[j];
+      const retrace = (H[k] - fl) / (H[k] - base);
+      if (retrace > 0 && retrace < 0.5 && fv / Math.max(1, i - k - 1) <= pv / 6 && C[i] > fh){ out.push('bull_flag'); break; }
+    }
+    // double bottom: two lows at about the same level, a bounce between them, now back above the bounce top
+    const pl = d.piv.filter(k => k + 2 <= i && k >= i - 50);
+    for (let a = 0; a < pl.length - 1 && !out.includes('dubbele_bodem'); a++){
+      for (let b = a + 1; b < pl.length; b++){
+        const x = pl[a], y = pl[b];
+        if (y - x < 5 || i - y > 12) continue;
+        if (Math.abs(L[y] / L[x] - 1) > 0.015) continue;
+        let neck = -Infinity; for (let j = x; j <= y; j++) neck = Math.max(neck, H[j]);
+        if (neck / Math.max(L[x], L[y]) - 1 < 0.03) continue;
+        if (C[i] > neck && C[i - 1] <= neck){ out.push('dubbele_bodem'); break; }
+      }
+    }
+    let va = 0; for (let k = i - 20; k < i; k++) va += V[k];
+    if (va > 0 && green && V[i] > 2.5 * va / 20) out.push('volume_piek');
+    if (C[i] > e20[i] + 4 * atr[i] || C[i] / C[Math.max(0, i - 6)] - 1 > Math.max(0.25, 10 * atr[i] / C[i])) out.push('te_ver_gestegen');
+    return out;
+  }
+  /**
+   * SOL-marktfilter: memecoins dalen bijna altijd mee als SOL zakt.
+   * Uit SOL-uurcandles maakt dit een functie (tijd in seconden) → true = kopen mag, false = SOL zit in een 1-uurs-daaltrend.
+   * Alleen uren die op dat moment al afgesloten waren tellen (nooit vooruit kijken). Onbekend = kopen mag.
+   */
+  function marketFilterFrom(hourBars){
+    if (!hourBars || hourBars.length < 25) return null;
+    const times = hourBars.map(b => b.time), C = hourBars.map(b => b.close), k = 2 / 21, e = [C[0]];
+    for (let i = 1; i < C.length; i++) e.push(C[i] * k + e[i - 1] * (1 - k));
+    const fn = t => {
+      let lo = 0, hi = times.length - 1, j = -1;
+      while (lo <= hi){ const m = (lo + hi) >> 1; if (times[m] + 3600 <= t){ j = m; lo = m + 1; } else hi = m - 1; }
+      if (j < 23) return true;
+      return !(C[j] < e[j] && e[j] < e[j - 3]);
+    };
+    fn.trendAt = t => fn(t) ? 'omhoog / zijwaarts' : 'omlaag';
+    return fn;
+  }
+  /** simple quality score: good patterns +1, warnings -2 */
+  function patternScore(list){ return (list || []).reduce((s, p) => s + (PATTERN_BAD.includes(p) ? -2 : 1), 0); }
+  // </shared:patterns>
+
   // ================= STRATEGY ENGINE (long-only / spot) =================
   // Entry signals (any enabled one can trigger a BUY when flat):
   //  EMA = fast EMA crosses above slow EMA (with an "armed" window so a red cross-candle no longer kills the signal)
@@ -837,26 +993,39 @@
     const emaF = computeEMA(C, p.emaFastLen), emaS = computeEMA(C, p.emaSlowLen);
     const atr = computeATR(H, L, C, p.atrLen), rsi = computeRSI(C, p.rsiLen);
     const hasVol = V.some(v => v > 0);
+    // candle size = smallest gap in the last 50 candles (GeckoTerminal skips candles without trades: one gap must not double it)
+    let barStep = 0;
+    for (let k = Math.max(1, n - 50); k < n; k++){ const d = bars[k].time - bars[k - 1].time; if (d > 0 && (!barStep || d < barStep)) barStep = d; }
+    const slip = Math.max(0, Number(p.slipPct) || 0) / 100;
     // trend filter: only buy above a slow, rising EMA
     const useTrend = p.useTrend !== false && p.trendLen > 1;
     const emaT = useTrend ? computeEMA(C, p.trendLen) : null;
     const warm = Math.max(p.emaSlowLen, p.atrLen + 1, p.rsiLen + 1, p.donLen + 1, p.sweepLen + 1, 5, useTrend ? Math.min(p.trendLen, 40) : 0);
-    // higher-timeframe filter: every htfMult candles form one bigger candle; only buy when that bigger trend is up.
+    // higher-timeframe filter: candles grouped by CLOCK TIME into bigger candles (htfMult × the candle size); only buy when that bigger trend is up.
+    // Grouping by time (not by position in the list) gives the live bot (last 300 candles) the same groups as a long backtest.
     // Uses only bigger candles that are already finished at this moment (no peeking ahead).
-    const useHtf = !!p.useHtf && p.htfMult > 1 && p.htfLen > 1;
-    let emaH = null;
+    const useHtf = !!p.useHtf && p.htfMult > 1 && p.htfLen > 1 && barStep > 0;
+    let emaH = null; const htfDone = useHtf ? new Array(n) : null;
     if (useHtf){
-      const hc = [];
-      for (let g = 0; (g + 1) * p.htfMult - 1 < n; g++) hc.push(C[(g + 1) * p.htfMult - 1]);
+      const hc = [], gsec = barStep * p.htfMult;
+      let pendG = null, pendC = 0;
+      for (let i = 0; i < n; i++){
+        const g = Math.floor(bars[i].time / gsec);
+        if (pendG !== null && g !== pendG){ hc.push(pendC); pendG = null; }   // a group with missing candles ends when the next group starts
+        if (bars[i].time + barStep >= (g + 1) * gsec){ hc.push(C[i]); pendG = null; } else { pendG = g; pendC = C[i]; }
+        htfDone[i] = hc.length - 1;
+      }
       emaH = computeEMA(hc, p.htfLen);
     }
     const htfOkAt = i => {
       if (!useHtf) return true;
-      const g = Math.floor(i / p.htfMult), done = (i % p.htfMult === p.htfMult - 1) ? g : g - 1;
+      const done = htfDone[i];
       return done >= 1 && emaH[done] != null && C[i] > emaH[done] && emaH[done] > emaH[done - 1];
     };
+    // trend quality (efficiency ratio over 20 candles): net rise / total movement. 1 = straight up, 0 = going nowhere. Optional (MIN_ER).
+    const erAt = i => { if (i < 20) return 0; let path = 0; for (let k = i - 19; k <= i; k++) path += Math.abs(C[k] - C[k - 1]); return path > 0 ? (C[i] - C[i - 20]) / path : 0; };
 
-    let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1, entryTime = 0;
+    let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1, entryTime = 0, sigPx = 0;
     let tp2Hit = false, lastWinExitIdx = -1e9;
     let curExits = [];
     let lastBullCross = -1e9, crossUsed = true, lastExitIdx = -1e9;
@@ -882,31 +1051,34 @@
       // ---- manage open position ----
       if (inPos && i > entryIdx){
         if (L[i] <= stop){
-          const fill = Math.min(stop, O[i]);
+          const fill = Math.min(stop, O[i]) * (1 - slip);   // a stop is a market sell after the fact: a bit worse than the stop price
           closeTrade(i, fill, size, stop > entry*1.0001 ? 'TRAIL' : 'SL');
           finishTrade(i); exitedThisBar = true;
         } else {
           if (!tp1Hit && H[i] >= tp1){
             tp1Hit = true;
-            closeTrade(i, tp1, p.partialFrac, 'TP1'); size -= p.partialFrac;
+            closeTrade(i, tp1 * (1 - slip), p.partialFrac, 'TP1'); size -= p.partialFrac;   // the bot sells at market after it sees the target: same slippage as other exits
             if (p.beAfterTp1) stop = Math.max(stop, entry);
           }
           if (H[i] >= tp2 && !tp2Hit && !p.letRun){
-            closeTrade(i, tp2, size, 'TP2'); finishTrade(i); exitedThisBar = true;
+            closeTrade(i, tp2 * (1 - slip), size, 'TP2'); finishTrade(i); exitedThisBar = true;
           } else {
             // "let it run": at TP2 sell only part, lock in at least TP1 and let a trailing stop ride the rest
             if (H[i] >= tp2 && !tp2Hit && p.letRun){
               tp2Hit = true;
               const rf = Math.min(0.95, Math.max(0.05, p.runFrac || 0.5));
-              closeTrade(i, tp2, size * rf, 'TP2', rf); size -= size * rf;
+              closeTrade(i, tp2 * (1 - slip), size * rf, 'TP2', rf); size -= size * rf;
               stop = Math.max(stop, tp1);
             }
             if (tp1Hit && p.trailMult > 0 && atr[i] != null){
               hh = Math.max(hh, H[i]);
               stop = Math.max(stop, hh - atr[i]*p.trailMult);
             }
-            if (p.exitOnCross && bearCross){
-              closeTrade(i, C[i], size, 'EXIT'); finishTrade(i); exitedThisBar = true;
+            if (p.quickBars > 0 && !tp1Hit && i - entryIdx >= p.quickBars && C[i] < sigPx){
+              // "snel uit": after N candles still under the buy price → the idea did not work, get out before it gets worse
+              closeTrade(i, C[i] * (1 - slip), size, 'EXIT'); events[events.length - 1].why = 'snel uit'; finishTrade(i); exitedThisBar = true;
+            } else if (p.exitOnCross && bearCross){
+              closeTrade(i, C[i] * (1 - slip), size, 'EXIT'); finishTrade(i); exitedThisBar = true;
             }
           }
         }
@@ -945,19 +1117,34 @@
 
         const trendPart = !useTrend || (C[i] > emaT[i] && emaT[i] > emaT[i-3]);
         const htfPart = htfOkAt(i);
-        const trendOk = trendPart && htfPart;
-        if (tags.length && !trendOk) skipped.push({ time: bars[i].time, price: C[i], src: tags.join('+'), why: !trendPart ? 'trend' : 'grote tf' });
-        if (tags.length && trendOk){
+        const erPart = !(p.minEr > 0) || erAt(i) >= p.minEr;
+        const trendOk = trendPart && htfPart && erPart;
+        const pats = tags.length ? patternsAt(bars, i) : [];
+        // pattern filter: never buy right after a big sprint or in a falling trend
+        const patOk = !p.usePatterns || !pats.some(x => PATTERN_BAD.includes(x));
+        // market filter: no buys while SOL itself is in a 1-hour downtrend (checked at the moment this candle closes)
+        const mktOk = !tags.length || !p.marketOk || p.marketOk(bars[i].time + barStep);
+        if (tags.length && !trendOk) skipped.push({ time: bars[i].time, price: C[i], src: tags.join('+'), why: !trendPart ? 'trend' : !htfPart ? 'grote tf' : 'zwakke trend' });
+        else if (tags.length && !patOk) skipped.push({ time: bars[i].time, price: C[i], src: tags.join('+'), why: 'patroon: ' + pats.filter(x => PATTERN_BAD.includes(x)).map(x => PATTERN_NAMES[x]).join(', ') });
+        else if (tags.length && !mktOk) skipped.push({ time: bars[i].time, price: C[i], src: tags.join('+'), why: 'markt (SOL daalt)' });
+        if (tags.length && trendOk && patOk && mktOk){
           const swingLow = Math.min(L[i], L[i-1], L[i-2]);
-          const stopPx = swingLow - atr[i]*p.atrMultSL;
-          const risk = C[i] - stopPx;
+          const structStop = swingLow - atr[i]*p.atrMultSL;
+          // targets come from the chart structure. Max loss: 'skip' (default) = only trades whose natural stop is within X%;
+          // 'tighten' (old) = pull the stop up to X% under the buy price (tests: that puts the stop in normal noise)
+          const risk = C[i] - structStop;
+          const tighten = p.lossMode === 'tighten';
+          const stopPx = p.maxLossPct > 0 && tighten ? Math.max(structStop, C[i] * (1 - p.maxLossPct / 100)) : structStop;
+          const lossOk = !(p.maxLossPct > 0) || tighten || (1 - structStop / (C[i] * (1 + slip))) * 100 <= p.maxLossPct;
           // cost filter: the first profit target must be clearly bigger than what the trade costs
           const edgeOk = !(p.minEdge > 0) || (risk * p.rrTp1 / C[i] * 100) >= p.minEdge * p.costPct;
           if (risk > 0 && !edgeOk) skipped.push({ time: bars[i].time, price: C[i], src: tags.join('+'), why: 'kosten', target: risk * p.rrTp1 / C[i] * 100 });
-          if (risk > 0 && edgeOk){
-            inPos = true; entry = C[i]; stop = stopPx; tp1 = entry + risk*p.rrTp1; tp2 = entry + risk*p.rrTp2;
-            tp1Hit = false; tp2Hit = false; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i; entryTime = bars[i].time; curExits = [];
-            events.push({ time: bars[i].time, type: 'BUY', price: C[i], src });
+          if (risk > 0 && edgeOk && !lossOk) skipped.push({ time: bars[i].time, price: C[i], src: tags.join('+'), why: 'stop te ver (>' + p.maxLossPct + '%)' });
+          if (risk > 0 && edgeOk && lossOk){
+            // live, the bot buys some seconds after the candle closed: count a little worse price (slippage setting)
+            inPos = true; entry = C[i] * (1 + slip); stop = stopPx; tp1 = C[i] + risk*p.rrTp1; tp2 = C[i] + risk*p.rrTp2;
+            tp1Hit = false; tp2Hit = false; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i; entryTime = bars[i].time; curExits = []; sigPx = C[i];
+            events.push({ time: bars[i].time, type: 'BUY', price: entry, src, pats });
           }
         }
       }
@@ -973,6 +1160,8 @@
     return { series, events, trades, skipped, state: last ? { inPos: last.inPos, entry: last.entry, stop: last.stop, tp1: last.tp1, tp2: last.tp2, tp1Hit: last.tp1Hit, size: last.size, src } : null };
   }
 
+  // score for the learn part: profit with a drawdown penalty; for losing settings a deeper drawdown makes the score worse
+  function rankOf(t){ const l = Math.log(t.e), pen = 1 + 3 * Math.abs(t.dd); return l >= 0 ? l / pen : l * pen; }
   function computeStats(trades, bars){
     const n = trades.length;
     const rets = trades.map(t => t.ret);
@@ -1016,9 +1205,17 @@
     if (gtWaiting && el && !/^Live data ophalen mislukt/.test(el.textContent)) el.textContent = 'Even wachten: GeckoTerminal staat gratis ± 10 verzoeken per minuut toe…';
   }
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  async function gtFetch(url, ms){
+  let gtBlockedUntil = 0;   // after GeckoTerminal says "too many requests" despite waiting: pause all calls for a minute
+  function staleErr(){ const e = new Error('vervangen door een nieuwer verzoek'); e.stale = true; return e; }
+  async function gtFetch(url, ms, isCurrent){
     for (;;){
+      if (isCurrent && !isCurrent()) throw staleErr();
       const now = Date.now();
+      if (now < gtBlockedUntil){
+        gtWaiting = true; updateGtNote();
+        gtWaitListeners.forEach(fn => { try { fn(Math.ceil((gtBlockedUntil - now) / 1000)); } catch (_){} });
+        await sleep(Math.min(gtBlockedUntil - now, 3000)); continue;
+      }
       while (gtCalls.length && now - gtCalls[0] > 60000) gtCalls.shift();
       if (gtCalls.length < GT_PER_MIN) break;
       gtWaiting = true; updateGtNote();
@@ -1032,6 +1229,7 @@
       // keep at least ~0.7 s between GeckoTerminal calls; bursts get blocked
       const gap = gtCalls.length ? Date.now() - gtCalls[gtCalls.length - 1] : 1e9;
       if (gap < 700) await sleep(700 - gap);
+      if (isCurrent && !isCurrent()) throw staleErr();
       gtCalls.push(Date.now());
       let res;
       try { res = await fetchWithTimeout(url, undefined, ms); }
@@ -1043,13 +1241,14 @@
         const ra = Number(res.headers.get('Retry-After'));
         await sleep(ra > 0 ? Math.min(ra, 20) * 1000 : waits[attempt]); continue;
       }
+      if (res.status === 429) gtBlockedUntil = Date.now() + 60000;
       return res;
     }
   }
   async function withRetry(fn, tries){
     let lastErr;
     for (let i = 0; i < (tries || 2); i++){
-      try { return await fn(); } catch (e){ lastErr = e; }
+      try { return await fn(); } catch (e){ lastErr = e; if (e.stale || (e.status >= 400 && e.status < 600)) break; }
     }
     throw lastErr;
   }
@@ -1135,19 +1334,27 @@
     });
   }
 
-  async function fetchOHLCV(network, poolAddress, unit, aggregate, limit, tokenAddress){
+  async function fetchOHLCV(network, poolAddress, unit, aggregate, limit, tokenAddress, isCurrent){
     if (unit === 'second') return fetchTradeCandles(network, poolAddress, Number(aggregate) || 1, tokenAddress);
     return withRetry(async () => {
       const url = 'https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + poolAddress + '/ohlcv/' + unit + '?aggregate=' + aggregate + '&limit=' + (limit || 300)
         + (tokenAddress ? '&token=' + encodeURIComponent(tokenAddress) : '');
-      const res = await gtFetch(url, 8000);
-      if (!res.ok) throw new Error('GeckoTerminal antwoordde met fout ' + res.status);
+      const res = await gtFetch(url, 8000, isCurrent);
+      if (!res.ok){ const e = new Error(res.status === 429 ? 'GeckoTerminal: even te veel verzoeken — over een minuut gaat het weer' : 'GeckoTerminal antwoordde met fout ' + res.status); e.status = res.status; throw e; }
       const json = await res.json();
       const list = (json.data && json.data.attributes && json.data.attributes.ohlcv_list) || [];
-      const bars = list.map(r => ({ time: r[0], open: r[1], high: r[2], low: r[3], close: r[4], volume: r[5] }));
-      bars.sort((a,b) => a.time - b.time);
-      return bars;
+      return cleanBars(list.map(r => ({ time: r[0], open: r[1], high: r[2], low: r[3], close: r[4], volume: r[5] })));
     });
+  }
+  // drop broken candles (missing/zero prices) and duplicate times: a null low would look like a stop-loss hit
+  function cleanBars(raw){
+    const m = new Map();
+    raw.forEach(b => {
+      const t = Number(b.time), o = Number(b.open), h = Number(b.high), l = Number(b.low), c = Number(b.close);
+      if (!(t > 0) || !(o > 0) || !(h > 0) || !(l > 0) || !(c > 0)) return;
+      m.set(t, { time: t, open: o, high: Math.max(h, o, c), low: Math.min(l, o, c), close: c, volume: Math.max(0, Number(b.volume) || 0) });
+    });
+    return [...m.values()].sort((a, b) => a.time - b.time);
   }
   async function fetchATH(network, poolAddress, tokenAddress){
     // daily candles cover the whole life of most memecoins; the high of any day includes its intraday peaks
@@ -1165,8 +1372,51 @@
     bars.sort((a,b) => a.time - b.time);
     return bars;
   }
+  // ---------- SOL market (same rule as the bot): SOL hourly candles → may we buy at time t? ----------
+  const solMarket = { fn: null, at: 0, busy: null };
+  async function loadSolMarket(force){
+    if (solMarket.busy) return solMarket.busy;
+    if (!force && solMarket.fn && Date.now() - solMarket.at < 15 * 60000) return solMarket.fn;
+    solMarket.busy = (async () => {
+      try {
+        const pp = await fetchBestPair(SOL_MINT);
+        const bars = await fetchOHLCV(pp.network, pp.poolAddress, 'hour', 1, 1000, SOL_MINT);
+        const fn = marketFilterFrom(bars);
+        if (!fn) throw new Error('te weinig SOL-data');
+        solMarket.fn = fn; solMarket.at = Date.now();
+        const now = fn(Math.floor(Date.now() / 1000));
+        $('mktNote').textContent = 'SOL nu: ' + (now ? '📈 omhoog / zijwaarts — kopen mag' : '📉 daalt — de bot koopt niets nieuws') + ' · ' + bars.length + ' uur aan SOL-data';
+        $('mktNote').className = 'note ' + (now ? 'up' : 'down');
+      } catch (e){ $('mktNote').textContent = 'SOL-trend laden mislukt (' + e.message + ') — zonder filter.'; $('mktNote').className = 'note down'; }
+      finally { solMarket.busy = null; }
+      return solMarket.fn;
+    })();
+    return solMarket.busy;
+  }
   // "take every small gain": small targets, tight stop, fast trailing — compare it honestly with real costs
   const SCALP = { rrTp1: 0.5, rrTp2: 1.0, atrMultSL: 0.6, trailMult: 1.0, partialFrac: 0.5, useTrend: false, minEdge: 0 };
+  // one list of strategy variants for the quick backtest AND the period backtest (was two copies that drifted apart)
+  function strategyVariants(p){
+    return [
+      ['Huidige instellingen', p],
+      ['Alleen EMA-cross', Object.assign({}, p, { useEma: true, useRev: false, useBrk: false })],
+      ['Alleen Reversal (dip)', Object.assign({}, p, { useEma: false, useRev: true, useBrk: false })],
+      ['Alleen Breakout', Object.assign({}, p, { useEma: false, useRev: false, useBrk: true })],
+      ['Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })],
+      ['Zonder trend- en kostenfilter', Object.assign({}, p, { useTrend: false, minEdge: 0 })],
+      ['Met grotere-timeframe-filter', Object.assign({}, p, { useHtf: true })],
+      ['Winst laten lopen + herinstap', Object.assign({}, p, { letRun: true, useCont: true })],
+      ['Zonder max-verlies en snel-uit', Object.assign({}, p, { maxLossPct: 0, quickBars: 0 })],
+      ['Max-verlies 3% (overslaan)', Object.assign({}, p, { maxLossPct: 3, lossMode: 'skip' })],
+      ['Max-verlies 8% (overslaan)', Object.assign({}, p, { maxLossPct: 8, lossMode: 'skip' })],
+      ['Met snel-uit na 3 candles', Object.assign({}, p, { quickBars: 3 })],
+      ['OUD: 2%-stop krapper + snel-uit 3', Object.assign({}, p, { maxLossPct: 2, lossMode: 'tighten', quickBars: 3 })],
+      ['Zonder SOL-marktfilter', Object.assign({}, p, { marketOk: null })],
+      ['Zonder patroonfilter', Object.assign({}, p, { usePatterns: false })],
+      ['Met trend-kwaliteit ≥ 0.3', Object.assign({}, p, { minEr: 0.3 })],
+      ['Scalp (snel winst nemen)', Object.assign({}, p, SCALP)]
+    ];
+  }
   function getParams(){
     return {
       emaFastLen: Number($('emaFastLen').value) || 5, emaSlowLen: Number($('emaSlowLen').value) || 13,
@@ -1185,9 +1435,26 @@
       minEdge: $('minEdge').value === '' ? 2 : Number($('minEdge').value),
       useHtf: $('useHtf').checked, htfMult: Number($('htfMult').value) || 4, htfLen: 20,
       letRun: $('letRun').checked, runFrac: Math.min(0.95, Math.max(0.05, (Number($('runFrac').value) || 50) / 100)),
-      useCont: $('useCont').checked, contBars: 30
+      useCont: $('useCont').checked, contBars: 30,
+      maxLossPct: $('maxLossPct').value === '' ? 5 : Math.max(0, Number($('maxLossPct').value) || 0),
+      lossMode: $('lossMode').value === 'tighten' ? 'tighten' : 'skip',
+      quickBars: $('quickBars').value === '' ? 0 : Math.max(0, Math.floor(Number($('quickBars').value) || 0)),
+      usePatterns: $('usePatterns').checked,
+      minEr: Math.max(0, Math.min(1, Number($('minEr').value) || 0)),
+      slipPct: $('slipPct').value === '' ? 0.5 : Math.max(0, Number($('slipPct').value) || 0),
+      marketOk: $('useMarket').checked && solMarket.fn ? solMarket.fn : null
     };
   }
+
+  // only replace HTML when it changed: rebuilding every refresh made taps on buttons get lost
+  // only when the terminal itself is visible again (not when you jump straight from one page to another)
+  function loadChartIfTerminal(){
+    if (lastMode || !$('tokenAddr').value.trim()) return;
+    if (['dashView', 'pickView', 'predView', 'walletView'].some(id => $(id) && $(id).style.display !== 'none')) return;
+    loadLive();
+  }
+  function setHtml(el, html){ if (el && el._h !== html){ el.innerHTML = html; el._h = html; } }
+  const httpsUrl = u => /^https:\/\/[^\s"'<>]+$/i.test(String(u || '')) ? String(u) : '';
 
   // ---------- market panel (token header + stats) ----------
   function setPair(pair){
@@ -1206,11 +1473,11 @@
       $('tSymbol').textContent = sym;
       const logo = $('tLogo');
       const img = p.info && p.info.imageUrl;
-      if (img){ logo.innerHTML = '<img alt="" src="' + esc(img) + '" onerror="this.remove()">'; }
+      if (httpsUrl(img)){ logo.innerHTML = '<img alt="" src="' + esc(httpsUrl(img)) + '" onerror="this.remove()">'; }
       else { logo.textContent = sym.charAt(0).toUpperCase(); }
       $('tDex').textContent = (p.dexId || '') + (p.chainId ? ' · ' + p.chainId : '');
       $('tAge').textContent = p.pairCreatedAt ? '· ' + fmtAge(p.pairCreatedAt) : '';
-      if (p.url){ $('tLink').href = p.url; $('tLink').style.display = ''; }
+      if (httpsUrl(p.url)){ $('tLink').href = httpsUrl(p.url); $('tLink').style.display = ''; } else $('tLink').style.display = 'none';
       const ch = p.priceChange || {};
       $('tChanges').innerHTML = [['5m','m5'],['1u','h1'],['6u','h6'],['24u','h24']].map(([lbl,k]) => {
         const s = fmtPct(ch[k]); if (s == null) return '';
@@ -1223,10 +1490,11 @@
       $('sVolSub').textContent = p.volume && p.volume.h1 != null ? '1u: ' + fmtUsd(p.volume.h1) : '\u00a0';
       const tx = p.txns && p.txns.h24;
       if (tx){
-        $('sTx').innerHTML = '<span class="up">' + tx.buys + '</span> / <span class="down">' + tx.sells + '</span>';
-        const tot = tx.buys + tx.sells;
-        $('sTxSub').textContent = tot ? Math.round(tx.buys / tot * 100) + '% buys' : '\u00a0';
-      }
+        const tb = Math.max(0, Number(tx.buys) || 0), ts = Math.max(0, Number(tx.sells) || 0);
+        $('sTx').innerHTML = '<span class="up">' + tb + '</span> / <span class="down">' + ts + '</span>';
+        const tot = tb + ts;
+        $('sTxSub').textContent = tot ? Math.round(tb / tot * 100) + '% buys' : '\u00a0';
+      } else { $('sTx').textContent = '–'; $('sTxSub').innerHTML = '&nbsp;'; }
       const vol24 = p.volume && Number(p.volume.h24);
       $('thinPoolBanner').style.display = (vol24 != null && vol24 < 5000) ? '' : 'none';
     } else if (lastMode === 'manual') {
@@ -1307,7 +1575,10 @@
     setPriceFormat(lastPrice);
     candleSeries.setData(displayBars(bars));
     // candles from GeckoTerminal lag a little behind the live price: keep showing a fresh ticker price
-    if (lastMode === 'live' && lastTick && Date.now() - lastTick.t < 10000) applyTick(lastTick.price);
+    if (lastMode === 'live' && lastTick && Date.now() - lastTick.t < 10000) applyTick(lastTick.price, lastTick.mint);
+    const isSec = lastMode === 'live' && lastLiveCtx && lastLiveCtx.unit === 'second';
+    secLine.applyOptions({ color: c.text });
+    secLine.setData(isSec ? bars.map(b => ({ time: b.time, value: b.close })) : []);
     fastSeries.setData(res.series.map(s => ({ time: s.time, value: s.emaF })));
     slowSeries.setData(res.series.map(s => ({ time: s.time, value: s.emaS })));
     const hasVol = bars.some(b => b.volume > 0);
@@ -1319,9 +1590,12 @@
     const markers = res.events.filter(e => barTimes.has(e.time)).map(e => {
       if (e.type === 'BUY' && e.time === formingT && lastMode === 'live')
         return { time: e.time, position: 'belowBar', color: '#9aa0a6', shape: 'arrowUp', text: 'BUY? (candle nog open)' };
-      if (e.type === 'BUY') return { time: e.time, position: 'belowBar', color: c.up, shape: 'arrowUp', text: 'BUY ' + (e.src || '') };
+      if (e.type === 'BUY'){
+        const good = (e.pats || []).filter(x => !PATTERN_BAD.includes(x)).map(x => PATTERN_NAMES[x]);
+        return { time: e.time, position: 'belowBar', color: c.up, shape: 'arrowUp', text: 'BUY ' + (e.src || '') + (good.length ? ' · ' + good.slice(0, 2).join(', ') : '') };
+      }
       if (e.type === 'TP1' || e.type === 'TP2') return { time: e.time, position: 'aboveBar', color: c.up, shape: 'circle', text: e.frac != null ? 'TP2 (' + Math.round(e.frac * 100) + '%, rest loopt)' : e.type };
-      return { time: e.time, position: 'aboveBar', color: c.down, shape: 'square', text: e.type === 'TRAIL' ? 'SELL (trail)' : e.type === 'EXIT' ? 'SELL' : e.type };
+      return { time: e.time, position: 'aboveBar', color: c.down, shape: 'square', text: e.type === 'TRAIL' ? 'SELL (trail)' : e.type === 'EXIT' ? (e.why ? 'SELL (' + e.why + ')' : 'SELL') : e.type };
     });
     const showSkip = !$('showSkipped') || $('showSkipped').checked;
     const usedT = new Set(markers.map(m => m.time));
@@ -1339,9 +1613,11 @@
     if (ml){
       const nB = res.events.filter(e => e.type === 'BUY').length;
       const sk = res.skipped || [], why = w => sk.filter(x => x.why === w).length;
-      const skTxt = sk.length ? ' · ' + sk.length + ' overgeslagen (' + [['kosten', why('kosten')], ['trend', why('trend')], ['grote tf', why('grote tf')]].filter(x => x[1]).map(x => x[1] + ' ' + x[0]).join(', ') + ')' : '';
+      const nPat = sk.filter(x => /^patroon/.test(x.why)).length;
+      const skTxt = sk.length ? ' · ' + sk.length + ' overgeslagen (' + [['kosten', why('kosten')], ['trend', why('trend')], ['grote tf', why('grote tf')], ['patroon', nPat], ['SOL-markt', why('markt (SOL daalt)')]].filter(x => x[1]).map(x => x[1] + ' ' + x[0]).join(', ') + ')' : '';
       ml.textContent = (nB ? nB + ' BUY-signaal/signalen in deze ' + bars.length + ' candles · ▲ BUY · ● TP · ■ SL/SELL'
         : 'Geen BUY-signalen in deze ' + bars.length + ' candles' + (bars.length < 80 ? ' (te weinig candles: de indicatoren hebben ± 25 candles opwarmtijd nodig — kies een kortere timeframe)' : ' met je huidige instellingen')) + skTxt
+        + (lastMode === 'live' && lastLiveCtx && lastLiveCtx.unit === 'second' ? secNote(bars) : '')
         + (why('kosten') > nB ? ' — tip: meet je kosten met je echte inzet (💶) of kies grotere candles' : '');
     }
 
@@ -1373,6 +1649,15 @@
     }
   }
 
+  // second charts are built from single trades: say how busy the coin really is
+  function secNote(bars){
+    const withTrade = bars.filter(b => b.volume > 0).length;
+    const mins = Math.max(1, (bars[bars.length - 1].time - bars[0].time) / 60);
+    const perMin = withTrade / mins;
+    return ' · ' + withTrade + ' van de ' + bars.length + ' seconden had een trade' + (perMin < 6
+      ? ' — weinig handel: de candles zijn vaak vlak (de doorgetrokken lijn toont de prijs). Voor signalen zijn 1m/5m beter; seconden zijn vooral om mee te kijken.'
+      : ' — de doorgetrokken lijn toont de prijs per seconde.');
+  }
   function updateStatusPanel(st, lastBar){
     const posEl = $('stPos');
     if (st && st.inPos){
@@ -1436,17 +1721,7 @@
     const el = $('btBody');
     if (bars.length < 60){ el.innerHTML = '<div class="feed-empty">Te weinig candles voor een backtest (minimaal ~60).</div>'; return; }
     const V = (name, pp, pre) => { const r = pre || runEngine(bars, pp); return { name, r, s: computeStats(r.trades, bars) }; };
-    const rows = [
-      V('Huidige instellingen', p, cur),
-      V('Alleen EMA-cross', Object.assign({}, p, { useEma: true, useRev: false, useBrk: false })),
-      V('Alleen Reversal (dip)', Object.assign({}, p, { useEma: false, useRev: true, useBrk: false })),
-      V('Alleen Breakout', Object.assign({}, p, { useEma: false, useRev: false, useBrk: true })),
-      V('Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })),
-      V('Zonder trend- en kostenfilter', Object.assign({}, p, { useTrend: false, minEdge: 0 })),
-      V('Met grotere-timeframe-filter', Object.assign({}, p, { useHtf: true })),
-      V('Winst laten lopen + herinstap', Object.assign({}, p, { letRun: true, useCont: true })),
-      V('Scalp (snel winst nemen)', Object.assign({}, p, SCALP))
-    ];
+    const rows = strategyVariants(p).map(([name, pp], idx) => V(name, pp, idx === 0 ? cur : null));
     const hours = (bars[bars.length-1].time - bars[0].time) / 3600;
     const few = rows[0].s.n < 20;
     let html = '';
@@ -1486,15 +1761,34 @@
 
 
   // ---------- paper trading (simulated, no wallet / no real funds) ----------
-  let paperState = { solBalance: 1, tokenBalance: 0, startSol: 1, costBasis: 0, realizedPnl: 0 };
+  // the paper position belongs to ONE coin (mint): switching coins never values or sells it at another coin's price
+  let paperState = { solBalance: 1, tokenBalance: 0, startSol: 1, costBasis: 0, realizedPnl: 0, mint: '', sym: '', lastPx: 0 };
+  const PAPER_KEY = 'signaalTerminal.paper.v1';
   function clamp0(n){ return (Number.isFinite(n) && n > 1e-12) ? n : 0; }
+  function savePaper(){ try { localStorage.setItem(PAPER_KEY, JSON.stringify({ s: paperState, tp1: paperTp1Done, log: $('paperLog').innerHTML.slice(0, 40000) })); } catch (_){} }
+  function restorePaper(){
+    try {
+      const o = JSON.parse(localStorage.getItem(PAPER_KEY) || 'null');
+      if (!o || !o.s || !Number.isFinite(Number(o.s.solBalance))) return false;
+      const s = o.s, num = x => Math.max(0, Number(x) || 0);
+      paperState = { solBalance: num(s.solBalance), tokenBalance: num(s.tokenBalance), startSol: num(s.startSol) || 1, costBasis: num(s.costBasis), realizedPnl: Number(s.realizedPnl) || 0,
+        mint: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s.mint || '') ? s.mint : '', sym: String(s.sym || '').slice(0, 20), lastPx: num(s.lastPx) };
+      paperTp1Done = !!o.tp1;
+      const box = document.createElement('div'); box.innerHTML = String(o.log || '');
+      box.querySelectorAll('script,img,iframe,[onerror],[onload]').forEach(x => x.remove());   // our own log, but never run anything from storage
+      $('paperLog').innerHTML = ''; $('paperLog').append(...box.childNodes);
+      if (!$('paperLog').children.length) $('paperLog').innerHTML = '<div class="feed-empty">Nog geen paper-trades.</div>';
+      renderPaperPanel(); return true;
+    } catch (_){ return false; }
+  }
   function resetPaper(){
     paperTp1Done = false;
     const start = Math.max(0, Number($('paperStart').value) || 1);
-    paperState = { solBalance: start, tokenBalance: 0, startSol: start, costBasis: 0, realizedPnl: 0 };
+    paperState = { solBalance: start, tokenBalance: 0, startSol: start, costBasis: 0, realizedPnl: 0, mint: '', sym: '', lastPx: 0 };
     $('paperLog').innerHTML = '<div class="feed-empty">Nog geen paper-trades.</div>';
-    renderPaperPanel();
+    renderPaperPanel(); savePaper();
   }
+  function paperOnOtherCoin(){ return paperState.tokenBalance > 1e-9 && !!paperState.mint && paperState.mint !== chartToken(); }
   function logPaper(type, msg){
     const el = $('paperLog');
     if (el.querySelector('.feed-empty')) el.innerHTML = '';
@@ -1513,11 +1807,13 @@
   }
   function renderPaperPanel(){
     const solPx = Number($('solUsdPrice').value) || 0;
-    const tokPx = lastPrice || 0;
     const hasPos = paperState.tokenBalance > 1e-9;
+    const other = paperOnOtherCoin();
+    if (hasPos && !other && lastPrice > 0) paperState.lastPx = lastPrice;
+    const tokPx = hasPos ? (paperState.lastPx || 0) : (lastPrice || 0);   // value the position at ITS coin's last known price
 
     $('pPosBadge').className = 'pos-badge ' + (hasPos ? 'on' : 'off');
-    $('pPosText').textContent = hasPos ? 'In positie' : 'Geen open positie';
+    $('pPosText').textContent = hasPos ? 'In positie' + (paperState.sym ? ' · ' + paperState.sym : '') + (other ? ' (andere coin — laatst bekende prijs)' : '') : 'Geen open positie';
     $('pCost').textContent = hasPos ? paperState.costBasis.toFixed(4) + ' SOL' : '–';
     $('pSol').textContent = paperState.solBalance.toFixed(4) + ' SOL';
     $('pTok').textContent = paperState.tokenBalance.toLocaleString('nl-NL', { maximumFractionDigits: 2 });
@@ -1575,13 +1871,15 @@
     const spend = clamp0(paperState.solBalance * (Math.min(100, Math.max(0, pctOfSol)) / 100));
     if (spend <= 0){ logPaper('BUY', 'Overgeslagen: geen SOL-saldo meer.'); return; }
     const usdSpend = spend * solPx;
-    const usdNet = usdSpend * (1 - (costPct || 0) / 100);
+    const usdNet = usdSpend * (1 - (costPct || 0) / 200);   // costPct = round trip (like the backtest): half now, half on the sell
     const tokensBought = usdNet / price;
     paperState.solBalance = clamp0(paperState.solBalance - spend);
     paperState.tokenBalance += tokensBought;
     paperState.costBasis += spend;   // SOL now tied up in the open position
-    logPaper('BUY', spend.toFixed(4) + ' SOL → ' + tokensBought.toLocaleString('nl-NL', { maximumFractionDigits: 2 }) + ' tokens @ $' + fmtPrice(price));
-    renderPaperPanel();
+    paperState.mint = chartToken(); paperState.lastPx = price;
+    paperState.sym = (pairInfo && pairInfo.baseToken && String(pairInfo.baseToken.symbol || '').slice(0, 20)) || '';
+    logPaper('BUY', (paperState.sym ? paperState.sym + ' · ' : '') + spend.toFixed(4) + ' SOL → ' + tokensBought.toLocaleString('nl-NL', { maximumFractionDigits: 2 }) + ' tokens @ $' + fmtPrice(price));
+    renderPaperPanel(); savePaper();
   }
   function paperSell(pctOfTokens, price, costPct, label){
     if (paperState.tokenBalance <= 0){ logPaper(label || 'SELL', 'Overgeslagen: geen tokens in de paper-wallet.'); return; }
@@ -1592,7 +1890,7 @@
     const amount = clamp0(tokensBefore * (Math.min(100, Math.max(0, pctOfTokens)) / 100));
     if (amount <= 0) return;
     const usdGross = amount * price;
-    const usdNet = usdGross * (1 - (costPct || 0) / 100);
+    const usdNet = usdGross * (1 - (costPct || 0) / 200);
     const solReceived = usdNet / solPx;
     const fractionOfPosition = tokensBefore > 0 ? amount / tokensBefore : 0;
     const costRemoved = paperState.costBasis * fractionOfPosition;
@@ -1601,10 +1899,10 @@
     paperState.solBalance += solReceived;
     paperState.costBasis = clamp0(paperState.costBasis - costRemoved);
     paperState.realizedPnl += tradeResult;
-    if (paperState.tokenBalance === 0) paperState.costBasis = 0; // fully closed, clear any float residue
+    if (paperState.tokenBalance === 0){ paperState.costBasis = 0; paperState.mint = ''; paperState.lastPx = 0; } // fully closed, clear any float residue
     const pnlStr = ' (' + (tradeResult >= 0 ? '+' : '') + tradeResult.toFixed(4) + ' SOL)';
     logPaper(label || 'SELL', amount.toLocaleString('nl-NL', { maximumFractionDigits: 2 }) + ' tokens → ' + solReceived.toFixed(4) + ' SOL @ $' + fmtPrice(price) + pnlStr);
-    renderPaperPanel();
+    renderPaperPanel(); savePaper();
   }
   // TP1 = partial exit (same fraction the strategy/backtest uses); every other exit closes the whole position
   function sellPctFor(type, p, e){
@@ -1625,13 +1923,14 @@
     newEvents.forEach(e => {
       if (e.type === 'TP1' && paperTp1Done){ logPaper('TP1', 'Overgeslagen: TP1 is al genomen voor deze positie.'); return; }
       if (e.type === 'BUY'){
-        if (paperState.tokenBalance > 1e-9){ logPaper('BUY', 'Overgeslagen: er staat al een positie open.'); return; }
+        if (paperState.tokenBalance > 1e-9){ logPaper('BUY', 'Overgeslagen: er staat al een positie open' + (paperState.sym ? ' (' + paperState.sym + ')' : '') + '.'); return; }
         paperTp1Done = false;
         const why = lastMode === 'live' ? liquidityOk() : null;
         if (why){ logPaper('BUY', 'Overgeslagen: ' + why + '.'); return; }
         paperBuy(buyPct, e.price, p.costPct);
       }
       else if (e.type !== 'FLIP'){
+        if (paperOnOtherCoin()){ logPaper(e.type, 'Overgeslagen: je paper-positie staat op ' + (paperState.sym || 'een andere coin') + ', niet op deze coin. Laad die coin om hem te beheren.'); return; }
         const had = paperState.tokenBalance > 1e-9;
         paperSell(sellPctFor(e.type, p, e), e.price, p.costPct, e.type);
         if (e.type === 'TP1' && had) paperTp1Done = true;
@@ -1663,7 +1962,7 @@
     return bytes;
   }
   function getConnection(){
-    return new solanaWeb3.Connection($('rpcUrl').value.trim() || 'https://api.mainnet-beta.solana.com', 'confirmed');
+    return new solanaWeb3.Connection($('rpcUrl').value.trim() || ($('wlRpc') && $('wlRpc').value.trim()) || 'https://api.mainnet-beta.solana.com', 'confirmed');
   }
   async function getTokenBalance(connection, ownerStr, mintStr){
     const resp = await connection.getParsedTokenAccountsByOwner(new solanaWeb3.PublicKey(ownerStr), { mint: new solanaWeb3.PublicKey(mintStr) });
@@ -1725,17 +2024,20 @@
     if (parsed.info.freezeAuthority) problems.push('maker kan wallets bevriezen (freeze authority)');
     return problems;
   }
+  let safetySeq = 0;
   async function renderSafety(tokenAddress){
-    const el = $('stSafety');
+    const el = $('stSafety'), my = ++safetySeq;
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(tokenAddress || '')){ el.textContent = '–'; el.className = ''; return; }
     el.textContent = 'controleren…'; el.className = '';
+    const stale = () => my !== safetySeq || (chartToken() && chartToken() !== tokenAddress);   // a slower check of the previous coin may not overwrite this one
     try {
       const problems = await checkMint(tokenAddress);
+      if (stale()) return;
       const liq = liquidityOk();
       if (liq) problems.push(liq);
       el.textContent = problems.length ? '⚠️ ' + problems.join(' · ') : '✓ mint & freeze uit, liquiditeit ok';
       el.className = problems.length ? 'down' : 'up';
-    } catch (e){ el.textContent = 'onbekend (' + e.message + ')'; el.className = ''; }
+    } catch (e){ if (stale()) return; el.textContent = 'onbekend (' + e.message + ')'; el.className = ''; }
   }
   // Returns null when OK, otherwise the reason not to buy.
   async function safetyCheckBeforeBuy(tokenAddress, quote, solLamports, slippage){
@@ -1764,9 +2066,11 @@
       const held = await getTokenBalance(getConnection(), walletPubkey, tokenAddress);
       if (BigInt(held.raw || '0') > 0n){ logTrade('BUY', 'Overgeslagen: je hebt dit token al in je wallet.'); return false; }
     } catch (e){ logTrade('BUY', 'Kon tokensaldo niet controleren: ' + e.message); return false; }
-    const buyPct = Math.min(100, Math.max(0, Number($('paperBuyPct').value) || 0));
-    if (buyPct <= 0){ logTrade('BUY', 'Overgeslagen: "inzet % per buy" staat op 0.'); return false; }
+    // real money has its OWN stake setting (not the paper one), and a cap is required
+    const buyPct = Math.min(100, Math.max(0, Number($('liveBuyPct').value) || 0));
+    if (buyPct <= 0){ logTrade('BUY', 'Overgeslagen: "echte inzet % per buy" staat op 0.'); return false; }
     const capSol = Math.max(0, Number($('maxSolPerBuy').value) || 0);
+    if (!(capSol > 0)){ logTrade('BUY', 'Geweigerd: vul eerst een "Max SOL per buy (cap)" in. Zonder maximum koopt de website nooit met echt geld.'); return false; }
     let solBal;
     try { solBal = await getSolBalance(getConnection(), walletPubkey); }
     catch (e){ logTrade('BUY', 'Kon SOL-saldo niet ophalen: ' + e.message); return false; }
@@ -1822,12 +2126,13 @@
   let tradeBusy = false;
   let liveTp1Done = false;   // TP1 may only fire once per position
   async function handleAutoTrade(newEvents){
-    if (!$('autoTradeToggle').checked || !newEvents.length) return;   // bot uit = geen swaps, geen popups
+    if (!$('expertTrade').checked || !$('autoTradeToggle').checked || !newEvents.length) return;   // bot uit = geen swaps, geen popups
     if (!walletPubkey){ logTrade('INFO', 'Bot staat aan, maar wallet is niet verbonden — signaal genegeerd.'); return; }
     if (tradeBusy){ logTrade('INFO', 'Vorige trade nog bezig — signaal overgeslagen.'); return; }
     tradeBusy = true;
     try {
-      const tokenAddress = extractTokenAddress($('tokenAddr').value);
+      const tokenAddress = chartToken();
+      if (!tokenAddress){ logTrade('INFO', 'Geen live grafiek geladen — signaal genegeerd.'); return; }
       const p = getParams();
       for (const e of newEvents){
         if (e.type === 'BUY'){ if (await executeBuy(tokenAddress)) liveTp1Done = false; }
@@ -1840,10 +2145,13 @@
     } finally { tradeBusy = false; }
   }
 
+  // the coin the chart (and so every signal) is about — not whatever is typed in the search box but not loaded yet
+  function chartToken(){ return lastMode === 'live' && lastLiveCtx ? lastLiveCtx.tokenAddress : ''; }
+
   // ---------- wallet sync + stop-wachter ----------
   function renderBotPos(){
     const cell = $('botPosCell'); if (!cell) return;
-    const tok = extractTokenAddress($('tokenAddr').value);
+    const tok = chartToken();
     const st = lastEngineState;
     if (!botPos || !botPos.open){
       cell.textContent = (st && st.inPos) ? 'geen (strategie wel in positie)' : 'geen';
@@ -1865,7 +2173,8 @@
   async function syncWalletPosition(){
     renderBotPos();
     if (!$('autoTradeToggle').checked || !walletPubkey || tradeBusy) return;
-    const tokenAddress = extractTokenAddress($('tokenAddr').value);
+    const tokenAddress = chartToken();
+    if (!tokenAddress) return;
     const st = lastEngineState;
     // strategy is in a position, but the bot never bought it: say so once per entry
     if (st && st.inPos && !(botPos && botPos.open && botPos.token === tokenAddress)){
@@ -1888,13 +2197,13 @@
   // Checks the live price every 5 s against the strategy's stop, so a stop-loss does not have to wait for the next candle refresh.
   async function stopWatchTick(){
     const cell = $('watchCell');
-    const tokenAddress = extractTokenAddress($('tokenAddr').value);
+    const tokenAddress = chartToken();
     const st = lastEngineState;
     const active = $('watchOn').checked && $('autoTradeToggle').checked && walletPubkey && lastMode === 'live'
       && botPos && botPos.open && botPos.token === tokenAddress && st && st.inPos && st.stop > 0;
     if (!active){ cell.textContent = $('watchOn').checked ? 'wacht op open bot-positie' : 'uit'; cell.className = ''; return; }
     let price;
-    if (lastTick && Date.now() - lastTick.t < 4000) price = lastTick.price;
+    if (lastTick && lastTick.mint === tokenAddress && Date.now() - lastTick.t < 4000) price = lastTick.price;
     else {
       try {
         const fresh = await fetchBestPair(tokenAddress);
@@ -1958,7 +2267,18 @@
   const pairCache = new Map();   // token -> { pair, poolAddress, network, t }
   const barsCache = new Map();   // pool|unit|agg -> bars
   const athCache = new Map();    // pool -> { res, t }
-  let loadSeq = 0, lastPairFetch = 0, prevRefreshValue = null;
+  let loadSeq = 0, lastPairFetch = 0, shownToken = '';
+  // measured cost per coin (a thin pool costs much more than BONK): remembered for a day
+  const COST_KEY = 'signaalTerminal.costs.v1';
+  let costByMint = {}; try { costByMint = JSON.parse(localStorage.getItem(COST_KEY) || '{}') || {}; } catch (_){}
+  function onCoinChanged(token){
+    // results of the previous coin must never look like results of this one
+    ['wkBody', 'optBody'].forEach(id => { const el = $(id); if (el){ el.innerHTML = id === 'wkBody' ? 'Klik op ▶ Start backtest voor deze coin.' : ''; if (id === 'optBody') el.style.display = 'none'; } });
+    const m = costByMint[token];
+    if (m && Date.now() - m.t < 86400000 && Number(m.sol) === Number($('costSol').value)){
+      $('costPct').value = m.cost; $('costNote').textContent = 'Kosten voor deze coin: ' + m.cost + '% (gemeten ' + new Date(m.t).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' }) + ').'; $('costNote').className = 'note';
+    } else { $('costNote').textContent = 'Kosten voor deze coin nog niet gemeten — klik 💶 voor een eerlijke backtest.'; $('costNote').className = 'note down'; }
+  }
   async function getPair(tokenAddress){
     const r = await fetchBestPair(tokenAddress);
     pairCache.set(tokenAddress, Object.assign({ t: Date.now() }, r));
@@ -1989,7 +2309,8 @@
     const validSol = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(tokenAddress);
     const validEvm = /^0x[0-9a-fA-F]{40}$/.test(tokenAddress);
     if (!validSol && !validEvm){
-      const hint = tokenAddress === tokenAddress.toLowerCase() && !/^0x/.test(tokenAddress)
+      const hint = tokenAddress.length < 32 ? ' Een Solana-adres is 32 tot 44 tekens lang — kopieer het hele adres (of plak de link van DexScreener/GMGN/pump.fun).'
+        : tokenAddress === tokenAddress.toLowerCase() && !/^0x/.test(tokenAddress)
         ? ' Het adres staat helemaal in kleine letters — Solana-adressen zijn hoofdlettergevoelig, kopieer het opnieuw met de kopieerknop van GMGN/DexScreener.'
         : ' Kopieer het adres opnieuw met de kopieerknop van GMGN/DexScreener.';
       setStatus('Dit is geen geldig token-adres.' + hint, 'err');
@@ -2008,9 +2329,6 @@
       if (seq !== loadSeq) return;
       const { pair, poolAddress, network } = pp;
       chart.timeScale().applyOptions({ secondsVisible: unit === 'second' });
-      if (unit === 'second'){
-        if ($('autoRefresh').value !== '10000'){ if (prevRefreshValue == null) prevRefreshValue = $('autoRefresh').value; $('autoRefresh').value = '10000'; }
-      } else if (prevRefreshValue != null){ $('autoRefresh').value = prevRefreshValue; prevRefreshValue = null; }
       const key = poolAddress + '|' + unit + '|' + agg;
       // show the cached chart for this timeframe right away (no trading on it), then fetch fresh data
       const cachedBars = barsCache.get(key);
@@ -2019,20 +2337,23 @@
         resetSession(); setPair(pair); render(cachedBars);
         setStatus('Getoond uit geheugen — bijwerken…');
       }
-      const bars = await fetchOHLCV(network, poolAddress, unit, agg, undefined, tokenAddress);
+      const bars = await fetchOHLCV(network, poolAddress, unit, agg, undefined, tokenAddress, () => seq === loadSeq);
       if (seq !== loadSeq) return;
       if (!bars.length) throw new Error('Geen trades/candles beschikbaar voor deze pool/timeframe.');
       barsCache.set(key, bars);
       lastMode = 'live';
       lastLiveCtx = { network, poolAddress, unit, agg, tokenAddress };
+      if (shownToken !== tokenAddress){ shownToken = tokenAddress; onCoinChanged(tokenAddress); }
       const keepView = !!(cachedBars && cachedBars.length);
       resetSession();          // fresh data counts as a new start: never trade on what happened while you were away
       if (keepView) fitPending = false;
       setPair(pair);
       render(bars);   // show the chart immediately — don't wait on the (slower) ATH lookup
+      if (!solMarket.fn && $('useMarket').checked) loadSolMarket().then(fn => { if (fn && seq === loadSeq && currentBars.length) renderCurrentParamsOnly(); });
       setStatus('Geladen · ' + bars.length + ' candles · ' + new Date().toLocaleTimeString('nl-NL')
         + (unit === 'second' ? ' · secondecandles uit losse trades — de grafiek groeit zolang de pagina open staat' : ''), 'ok');
       setupAutoRefresh();
+      try { localStorage.setItem('signaalTerminal.last', JSON.stringify({ token: tokenAddress, tf: currentTf })); } catch (_){}
       if (network === 'solana') renderSafety(tokenAddress); else { $('stSafety').textContent = 'alleen voor Solana'; $('stSafety').className = ''; }
       // backfill the true all-time-high in the background once it's ready, then just refresh the stat panel
       // ATH needs a separate call; do it at most once per 10 minutes per pool
@@ -2044,7 +2365,13 @@
         if (res && res.price && (!ath.price || res.price > ath.price)){ ath = res; renderMarket(); }
       }).catch(() => {});
     } catch (err){
-      if (seq === loadSeq) setStatus('Live data ophalen mislukt: ' + err.message + ' — plak eventueel je eigen candle-data onderaan.', 'err');
+      if (seq === loadSeq){
+        const still = lastMode === 'live' && lastLiveCtx && lastLiveCtx.tokenAddress !== tokenAddress;
+        const sym = still && pairInfo && pairInfo.baseToken ? pairInfo.baseToken.symbol : '';
+        setStatus('Live data ophalen mislukt: ' + String(err.message).replace(/\.$/, '') + ' — probeer het zo nog eens, of plak je eigen candle-data onderaan (Indicator-instellingen).'
+          + (still ? ' Je ziet nog steeds ' + (sym || 'de vorige coin') + '.' : ''), 'err', 60000);
+        if (still) $('tokenAddr').value = lastLiveCtx.tokenAddress;
+      }
     } finally { if (seq === loadSeq) $('loadBtn').disabled = false; }
   }
 
@@ -2077,14 +2404,16 @@
       if (fresh) setPair(fresh.pair);
       if (bars.length){
         barsCache.set(c.poolAddress + '|' + c.unit + '|' + c.agg, bars);
-        render(bars); setStatus('Bijgewerkt · ' + new Date().toLocaleTimeString('nl-NL'), 'ok');
+        render(bars);
+        if (Date.now() > statusHoldUntil && !$('loadBtn').disabled) setStatus('Bijgewerkt · ' + new Date().toLocaleTimeString('nl-NL'), 'ok');
       }
-    } catch (err){ setStatus('Auto-ververs mislukt: ' + err.message, 'err'); }
+    } catch (err){ if (Date.now() > statusHoldUntil && !$('loadBtn').disabled) setStatus('Auto-ververs mislukt: ' + err.message, 'err'); }
     finally { isRefreshing = false; }
   }
   function setupAutoRefresh(){
     if (refreshTimer) clearInterval(refreshTimer);
-    const ms = Number($('autoRefresh').value);
+    let ms = Number($('autoRefresh').value);
+    if (ms > 0 && String(currentTf).startsWith('second:')) ms = Math.min(ms, 10000);   // second candles: refresh at least every 10 s (setting itself unchanged)
     if (ms > 0) refreshTimer = setInterval(refreshLive, ms);
   }
   function loadManual(){
@@ -2113,14 +2442,14 @@
   function renderWatchlist(){
     const el = $('watchlist');
     const cur = currentTokenAddr();
-    el.innerHTML = watchlist.map((w, i) => {
+    setHtml(el, watchlist.map((w, i) => {
       const pr = wlPrices[w.addr];
       const chg = pr && Number.isFinite(pr.chg) ? '<span class="' + (pr.chg > 0 ? 'up' : pr.chg < 0 ? 'down' : 'flatc') + '">' + (pr.chg > 0 ? '+' : '') + pr.chg.toFixed(1) + '%</span>' : '';
       return '<div class="wl-item' + (w.addr === cur ? ' active' : '') + '" data-i="' + i + '" title="' + esc(w.name || w.addr) + '">'
         + '<b>' + esc(w.symbol || w.addr.slice(0, 4) + '…') + '</b>'
         + '<span class="wl-px">' + (pr && pr.price ? fmtPrice(pr.price) : '') + '</span>' + chg
         + '<button class="wl-x" data-del="' + i + '" title="Verwijder uit watchlist">×</button></div>';
-    }).join('');
+    }).join(''));
     const saved = watchlist.some(w => w.addr === cur);
     $('watchAddBtn').textContent = saved ? '★' : '☆';
     $('watchAddBtn').classList.toggle('saved', saved);
@@ -2183,8 +2512,10 @@
     const [u, a] = currentTf.split(':');
     return ({ second: 1, minute: 60, hour: 3600, day: 86400 }[u] || 60) * (Number(a) || 1);
   }
-  function applyTick(px){
-    if (!currentBars.length || !candleSeries) return;
+  function applyTick(px, mint){
+    if (!currentBars.length || !candleSeries || lastMode !== 'live' || !lastLiveCtx) return;
+    if (mint && mint !== lastLiveCtx.tokenAddress) return;                      // price of another coin (you just switched)
+    if (lastLiveCtx.unit + ':' + lastLiveCtx.agg !== currentTf) return;        // chart of the new timeframe is still loading
     const refClose = currentBars[currentBars.length - 1].close;
     if (refClose > 0 && (px / refClose > 1.5 || px / refClose < 0.6)) return;   // probably a different pool's price; wait for the candles
     const secs = tfSeconds();
@@ -2197,6 +2528,7 @@
     else return;
     liveBar = bar;
     try { candleSeries.update(bar); } catch (_){}
+    if (lastLiveCtx.unit === 'second'){ try { secLine.update({ time: bar.time, value: px }); } catch (_){} }
     lastPrice = px;
     $('stPrice').textContent = fmtPrice(px);
   }
@@ -2210,9 +2542,10 @@
       if (lastLiveCtx !== c) return;
       const px = Number(r.pair.priceUsd);
       if (!(px > 0)) return;
-      lastTick = { price: px, t: Date.now() };
       setPair(r.pair);
-      applyTick(px);
+      // the live line already moves the candle every second (Jupiter); two sources at once would make it flicker
+      const llFresh = $('llOn').checked && LL.ticks.length && Date.now() - LL.ticks[LL.ticks.length - 1].t < 4000 && LL.mint === c.tokenAddress;
+      if (!llFresh){ lastTick = { price: px, t: Date.now(), mint: c.tokenAddress }; applyTick(px, c.tokenAddress); }
       renderMarket();
     } catch (_){} finally { tickBusy = false; }
   }
@@ -2224,7 +2557,6 @@
   $('tickRate').addEventListener('change', setupTicker);
   $('showSkipped').addEventListener('change', () => { if (currentBars.length) render(currentBars); });
   $('rawWicks').addEventListener('change', () => { if (currentBars.length) render(currentBars); });
-  setupTicker();
 
   // ---------- ⚡ live line: price every second, drawn smoothly across the screen (60 fps) ----------
   // Display only — signals and the bot keep using the real candles.
@@ -2257,6 +2589,7 @@
     return null;
   }
   async function llFetch(){
+    if (lastMode !== 'live' && LL.ticks.length){ LL.mint = null; llReset(); }   // CSV data: no live price
     if (!llVisible() || lastMode !== 'live' || !lastLiveCtx || document.hidden || LL.busy) return;
     const c = lastLiveCtx;
     if (LL.mint !== c.tokenAddress){ LL.mint = c.tokenAddress; llReset(); }
@@ -2270,7 +2603,8 @@
       const now = Date.now();
       LL.ticks.push({ t: now, p: r.px });
       while (LL.ticks.length > 2 && LL.ticks[0].t < now - 330000) LL.ticks.shift();
-      applyTick(r.px);   // the forming candle moves with it
+      applyTick(r.px, c.tokenAddress);   // the forming candle moves with it
+      lastTick = { price: r.px, t: now, mint: c.tokenAddress };
       // second charts: every live price becomes a point in the candles, so 1s/5s keep moving between trades
       if (currentTf.startsWith('second:')){
         let cache = tradeCache.get(c.poolAddress);
@@ -2290,12 +2624,16 @@
     const raw = range / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / mag;
     return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag;
   }
+  const LL_FRAME_MS = (window.matchMedia && matchMedia('(pointer: coarse)').matches) ? 50 : 33;
   function llDraw(ts){
     requestAnimationFrame(llDraw);
     const cv = $('liveLine');
     const want = $('llOn').checked ? '' : 'none';
     if ($('liveLineWrap').style.display !== want) $('liveLineWrap').style.display = want;
     if (!llVisible()) return;
+    // 30 frames per second (20 on a phone) still looks smooth and costs about half the battery of 60
+    if (ts - (LL.lastDraw || 0) < LL_FRAME_MS) return;
+    LL.lastDraw = ts;
     const dt = Math.min(100, ts - (LL.lastFrame || ts)); LL.lastFrame = ts;
     const dpr = window.devicePixelRatio || 1;
     const W = cv.clientWidth, H = cv.clientHeight;
@@ -2400,10 +2738,10 @@
 
 
   // ---------- period backtest with a euro amount ----------
-  async function fetchHistory(network, poolAddress, unit, agg, fromSec, onProgress, tokenAddress){
+  async function fetchHistory(network, poolAddress, unit, agg, fromSec, onProgress, tokenAddress, startBefore){
     // GeckoTerminal returns max 1000 candles per call; page backwards with before_timestamp
     const all = new Map();
-    let before = null;
+    let before = startBefore || null;
     let partialError = null;
     for (let page = 0; page < 25; page++){
       const url = 'https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + poolAddress + '/ohlcv/' + unit
@@ -2412,7 +2750,7 @@
       let json;
       try {
         const res = await gtFetch(url, 15000);
-        if (!res.ok) throw new Error('GeckoTerminal antwoordde met fout ' + res.status);
+        if (!res.ok){ const er = new Error('GeckoTerminal antwoordde met fout ' + res.status); er.status = res.status; throw er; }
         json = await res.json();
       } catch (e){
         if (!all.size) throw e;
@@ -2434,6 +2772,56 @@
     return out;
   }
   const historyCache = new Map();   // pool|tf -> { bars, t, from }
+  // ---- candle store: closed candles never change, so keep them (memory + IndexedDB) and only fetch what is missing ----
+  const IDB = (() => {
+    let dbp = null;
+    const open = () => dbp || (dbp = new Promise((res, rej) => {
+      try { const r = indexedDB.open('signaalTerminal', 1); r.onupgradeneeded = () => r.result.createObjectStore('candles'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }
+      catch (e){ rej(e); }
+    }));
+    const tx = async (mode, fn) => { const db = await open(); return new Promise((res, rej) => { const t = db.transaction('candles', mode); const st = t.objectStore('candles'); const out = fn(st); t.oncomplete = () => res(out && out.result); t.onerror = () => rej(t.error); }); };
+    return {
+      get: k => tx('readonly', st => st.get(k)).catch(() => null),
+      set: (k, v) => tx('readwrite', st => st.put(v, k)).catch(() => null),
+    };
+  })();
+  async function getHistory(network, poolAddress, unit, agg, fromSec, onProgress, tokenAddress){
+    const key = poolAddress + '|' + unit + '|' + agg, secs = (unit === 'hour' ? 3600 : unit === 'day' ? 86400 : 60) * Number(agg);
+    let c = historyCache.get(key);
+    if (!c){
+      const v = await Promise.race([IDB.get(key), new Promise(r => setTimeout(() => r(null), 1500))]);
+      if (v && Array.isArray(v.bars) && v.bars.length && Number.isFinite(v.cover)){ c = v; historyCache.set(key, c); }
+    }
+    let bars = c ? c.bars : [], cover = c ? c.cover : Infinity, partialError = null, fromNow = false;
+    const merge = (list, overwrite) => { const m = new Map(bars.map(b => [b.time, b])); list.forEach(b => { if (overwrite || !m.has(b.time)) m.set(b.time, b); }); bars = [...m.values()].sort((x, y) => x.time - y.time); };
+    if (!bars.length || cover > fromSec){
+      // nothing stored, or we need older candles: page backwards from the oldest one we have (or from now)
+      fromNow = !bars.length;
+      const older = await fetchHistory(network, poolAddress, unit, agg, fromSec, onProgress, tokenAddress, bars.length ? bars[0].time : null);
+      partialError = older.partialError || null;
+      merge(older, false);
+      // reached the birth of the pool (nothing older, or the oldest candle is still after fromSec): we have everything
+      if (!partialError && bars.length) cover = (!older.length || (older[0].time > fromSec && older.length < 25000)) ? -1 : Math.min(cover, bars[0].time);
+    }
+    if (bars.length && !fromNow && (!c || Date.now() - c.t > 20000)){
+      // newest part: only the candles since the last one we have (that one may still have been open: overwrite it)
+      const last = bars[bars.length - 1].time;
+      const need = Math.ceil((Date.now() / 1000 - last) / secs) + 2;
+      if (need > 1000){
+        const fresh = await fetchHistory(network, poolAddress, unit, agg, last, null, tokenAddress);
+        partialError = partialError || fresh.partialError || null;
+        merge(fresh, true);
+      } else if (need > 1){
+        try { merge(await fetchOHLCV(network, poolAddress, unit, agg, need, tokenAddress), true); }
+        catch (e){ partialError = partialError || e; }
+      }
+    }
+    if (bars.length > 60000){ bars = bars.slice(bars.length - 60000); cover = bars[0].time; }
+    if (!partialError && bars.length){ const entry = { bars, cover, t: Date.now() }; historyCache.set(key, entry); IDB.set(key, entry); }
+    const out = bars.filter(b => b.time >= fromSec);
+    out.partialError = partialError;
+    return out;
+  }
   let solEurCache = null;
   async function fetchSolEur(){
     if (solEurCache && Date.now() - solEurCache.t < 600000) return solEurCache.v;
@@ -2445,7 +2833,16 @@
     try {
       const res = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=eur', undefined, 7000);
       const j = await res.json();
-      return Number(j && j.solana && j.solana.eur) || null;
+      const v = Number(j && j.solana && j.solana.eur);
+      if (v > 0) return v;
+    } catch (_){}
+    try {
+      const [a, b] = await Promise.all([
+        fetchWithTimeout('https://lite-api.jup.ag/price/v3?ids=' + SOL_MINT, undefined, 7000).then(r => r.json()),
+        fetchWithTimeout('https://api.frankfurter.app/latest?from=USD&to=EUR', undefined, 7000).then(r => r.json())
+      ]);
+      const usd = Number(a && a[SOL_MINT] && a[SOL_MINT].usdPrice), rate = Number(b && b.rates && b.rates.EUR);
+      return usd > 0 && rate > 0 ? usd * rate : null;
     } catch (_){ return null; }
   }
   async function runPeriodBacktest(){
@@ -2470,27 +2867,26 @@
     const onWait = sec => { el.textContent = 'Wachten op GeckoTerminal (gratis ± 10 verzoeken per minuut)… nog ± ' + sec + ' s'; };
     gtWaitListeners.add(onWait); heavyJobs++;
     try {
-      const key = c.poolAddress + '|' + unit + '|' + agg;
-      const cached = historyCache.get(key);
       const fromSec = start - warm * secs;
       // 1. the chart already has every candle we need (young coin, or same timeframe) → no download at all
-      // 2. we downloaded this period less than 5 minutes ago → reuse
+      // 2. otherwise the candle store: only the missing candles are downloaded (older ones are kept, also after a reload)
       const haveChart = currentTf === unit + ':' + agg && currentBars.length && currentBars[0].time <= fromSec + secs
         || (currentTf === unit + ':' + agg && currentBars.length && pairInfo && pairInfo.pairCreatedAt && currentBars[0].time <= pairInfo.pairCreatedAt / 1000 + secs * 2);
       const loadBars = haveChart ? Promise.resolve(currentBars.slice())
-        : (cached && Date.now() - cached.t < 300000 && cached.from <= fromSec) ? Promise.resolve(cached.bars)
         : Promise.race([
-            fetchHistory(c.network, c.poolAddress, unit, agg, fromSec, n => { el.textContent = 'Candles ophalen… ' + n.toLocaleString('nl-NL') + ' van ± ' + needed.toLocaleString('nl-NL'); }, c.tokenAddress)
-              .then(b => { if (!b.partialError) historyCache.set(key, { bars: b, t: Date.now(), from: fromSec }); return b; }),
+            getHistory(c.network, c.poolAddress, unit, agg, fromSec, n => { el.textContent = 'Candles ophalen… ' + n.toLocaleString('nl-NL') + ' van ± ' + needed.toLocaleString('nl-NL'); }, c.tokenAddress),
             new Promise((_, rej) => setTimeout(() => rej(new Error('ophalen duurde langer dan 3 minuten')), 180000))
           ]);
       const [bars, solEur] = await Promise.all([
         loadBars,
-        fetchSolEur()
+        fetchSolEur(),
+        $('useMarket').checked ? loadSolMarket() : Promise.resolve(null)
       ]);
-      if (bars.length < 60) throw new Error('te weinig candles gevonden (' + bars.length + ')');
+      if ($('useMarket').checked && solMarket.fn) p.marketOk = solMarket.fn;   // the SOL data may have arrived just now
+      if (chartToken() !== c.tokenAddress) return;   // you switched coin meanwhile: these candles belong to the previous coin
+      if (bars.length < 60){ const e = new Error('te weinig candles gevonden (' + bars.length + ')'); e.young = true; throw e; }
       const res = runEngine(bars, p);
-      lastPeriod = { bars, start };
+      lastPeriod = { bars, start, token: c.tokenAddress, tf: $('wkTf').value };
       const trades = res.trades.filter(t => t.entryTime >= start);
       const firstIn = bars.find(b => b.time >= start) || bars[0];
       const realStart = Math.max(start, bars[0].time);
@@ -2526,17 +2922,7 @@
         + '<tr><td>Buy &amp; hold (zelfde periode)</td><td class="' + (bh >= 0 ? 'up' : 'down') + '">' + fmtE(eur * (1 + bh)) + ' (' + pct(bh) + ')</td></tr>'
         + '</table>';
       // same period, the five strategy variants side by side
-      const variants = [
-        ['Huidige instellingen', p],
-        ['Alleen EMA-cross', Object.assign({}, p, { useEma: true, useRev: false, useBrk: false })],
-        ['Alleen Reversal (dip)', Object.assign({}, p, { useEma: false, useRev: true, useBrk: false })],
-        ['Alleen Breakout', Object.assign({}, p, { useEma: false, useRev: false, useBrk: true })],
-        ['Alle drie samen', Object.assign({}, p, { useEma: true, useRev: true, useBrk: true })],
-        ['Zonder trend- en kostenfilter', Object.assign({}, p, { useTrend: false, minEdge: 0 })],
-        ['Met grotere-timeframe-filter', Object.assign({}, p, { useHtf: true })],
-        ['Winst laten lopen + herinstap', Object.assign({}, p, { letRun: true, useCont: true })],
-        ['Scalp (snel winst nemen)', Object.assign({}, p, SCALP)]
-      ];
+      const variants = strategyVariants(p);
       const periodBars = bars.filter(b => b.time >= firstIn.time);
       const vrows = variants.map(([name, pp], idx) => {
         const tr = (idx === 0 ? res : runEngine(bars, pp)).trades.filter(t => t.entryTime >= start);
@@ -2556,21 +2942,26 @@
           + '</tbody></table></div>';
       }
       html += '<div class="note" style="margin-top:8px;">' + bars.length + ' candles van ' + $('wkTf').selectedOptions[0].text + ', huidige strategie-instellingen, ' + Math.round(stake * 100) + '% inzet per trade, winst telt door (samengesteld), kosten/slippage ' + p.costPct + '% per trade. '
-        + 'Gerekend in SOL-waarde: de koersverandering van SOL zelf tegenover de euro zit er niet in. Fills zijn precies op de stop/TP-prijs; bij meme coins kan een echte stop veel slechter uitvallen. Een goed resultaat in het verleden zegt niets over volgende week.</div>';
+        + 'Gerekend in SOL-waarde: de koersverandering van SOL zelf tegenover de euro zit er niet in. Elke koop en verkoop is gerekend met je slippage-instelling bovenop de kosten; bij meme coins kan een echte stop bij een plotselinge dump nog slechter uitvallen. Een goed resultaat in het verleden zegt niets over volgende week.</div>';
+      if (chartToken() !== c.tokenAddress) return;
       el.innerHTML = html;
     } catch (err){
-      el.innerHTML = '<span class="down">Backtest mislukt: ' + esc(err.message) + '.</span> Wacht een minuut en probeer het opnieuw. Blijft het misgaan, zet dan je adblocker/Brave Shields uit voor deze pagina of kies grotere candles.';
+      if (chartToken() !== c.tokenAddress) return;
+      el.innerHTML = err.young
+        ? '<span class="down">Te weinig candles voor een backtest (' + esc(err.message) + ').</span> Deze coin is waarschijnlijk te jong of er wordt te weinig gehandeld. Kies kleinere candles (bijv. 1m) of wacht tot de coin ouder is.'
+        : '<span class="down">Backtest mislukt: ' + esc(err.message) + '.</span> Wacht een minuut en probeer het opnieuw. Blijft het misgaan, zet dan je adblocker/Brave Shields uit voor deze pagina of kies grotere candles.';
     } finally { $('wkRunBtn').disabled = false; gtWaitListeners.delete(onWait); heavyJobs = Math.max(0, heavyJobs - 1); }
   }
   $('wkRunBtn').addEventListener('click', () => { runPeriodBacktest(); });
 
   // ---------- settings are remembered in this browser ----------
   const SET_KEY = 'signaalTerminal.settings.v1';
-  const SETTING_IDS = ['emaFastLen','emaSlowLen','atrLen','atrMultSL','rrTp1','rrTp2','confirmCandle','confirmWindow',
+  const STRATEGY_IDS = ['emaFastLen','emaSlowLen','atrLen','atrMultSL','rrTp1','rrTp2','confirmCandle','confirmWindow',
     'rsiLen','rsiOS','rsiLookback','revBody','sweepLen','donLen','volMult','trailMult','partialFrac',
-    'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge','useHtf','htfMult','letRun','runFrac','useCont','showSkipped','costSol',
-    'paperBuyPct','maxSolPerBuy','slippageBps','maxRoundTrip','wkEur','wkDays','wkStake','wkTf',
-    'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq','pdTrend','pdNew','pdBig','pdWatch','pdLiq','pdHorizon','pdAuto','tgBot1','tgBot2','llOn','llWin','wlRpc','wlDepth','wlAuto','wlOnlyBuys','wlMinLiq','wlShowBots'];
+    'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk','useTrend','trendLen','minEdge','useHtf','htfMult','letRun','runFrac','useCont','maxLossPct','lossMode','quickBars','usePatterns','minEr','useMarket','slipPct'];   // every strategy setting (also re-renders the chart on change)
+  const SETTING_IDS = STRATEGY_IDS.concat(['showSkipped','costSol',
+    'paperBuyPct','liveBuyPct','maxSolPerBuy','slippageBps','maxRoundTrip','rpcUrl','minLiq','paperStart','autoRefresh','safetyOn','watchOn','soundOn','rdAuto','wkEur','wkDays','wkStake','wkTf',
+    'rdSource','rdMcap','rdLiq','rdTf','tickRate','rawWicks','pkBig','pkWatch','pkTrend','pkTf','pkDays','pkStake','pkLiq','pdTrend','pdNew','pdBig','pdWatch','pdLiq','pdHorizon','pdAuto','tgBot1','tgBot2','llOn','llWin','dbUrl','dbKey','dbAuto','wlRpc','wlDepth','wlAuto','wlOnlyBuys','wlMinLiq','wlShowBots']);
   function saveSettings(){
     const o = {};
     SETTING_IDS.forEach(id => { const el = $(id); if (el) o[id] = el.type === 'checkbox' ? el.checked : el.value; });
@@ -2593,99 +2984,132 @@
     const note = $('costNote');
     if (lastMode !== 'live' || !lastLiveCtx){ note.textContent = 'Laad eerst een token.'; note.className = 'note down'; return; }
     note.textContent = 'Meten…'; note.className = 'note';
+    const tok = lastLiveCtx.tokenAddress;   // measure and save for THIS coin, even if you switch coin while it measures
     try {
       const solEur = await fetchSolEur();
       const sol = Math.max(0.001, Number($('costSol').value) || 0.05);   // your real stake per trade
       const eur = solEur ? Math.round(sol * solEur * 100) / 100 : '?';
       const lamports = Math.floor(sol * 1e9);
       const slip = Number($('slippageBps').value) || 300;
-      const q1 = await jupiterQuote(SOL_MINT, lastLiveCtx.tokenAddress, lamports, slip);
-      const q2 = await jupiterQuote(lastLiveCtx.tokenAddress, SOL_MINT, q1.outAmount, slip);
+      const q1 = await jupiterQuote(SOL_MINT, tok, lamports, slip);
+      const q2 = await jupiterQuote(tok, SOL_MINT, q1.outAmount, slip);
       const loss = (1 - Number(q2.outAmount) / lamports) * 100;
-      const cost = Math.max(0.1, Math.ceil((loss + 0.2) * 10 - 1e-6) / 10);   // + a little margin for fees and moving prices
+      // + network/priority fees of 2 swaps (±0.0004 SOL, fixed — so a big part of a small stake) + a little margin
+      const feePct = 0.0004 / sol * 100;
+      const cost = Math.max(0.1, Math.ceil((loss + feePct + 0.2) * 10 - 1e-6) / 10);
+      costByMint[tok] = { cost, sol, t: Date.now() }; try { localStorage.setItem(COST_KEY, JSON.stringify(costByMint)); } catch (_){}
+      if (chartToken() !== tok) return;   // another coin is on screen now: saved for later, don't touch its settings
       $('costPct').value = cost; saveSettings(); renderCurrentParamsOnly();
-      note.textContent = 'Kopen + direct verkopen van ' + sol.toFixed(3) + ' SOL (≈ €' + eur + ') kost nu ' + loss.toFixed(2) + '%. Kosten per trade ingesteld op ' + cost + '%.';
+      note.textContent = 'Kopen + direct verkopen van ' + sol.toFixed(3) + ' SOL (≈ €' + eur + ') kost nu ' + loss.toFixed(2) + '% prijsverschil + ' + feePct.toFixed(1) + '% netwerk-fees. Kosten per trade ingesteld op ' + cost + '%. (Zet in Railway COST_PCT=' + Math.max(0.1, Math.ceil((loss + 0.2) * 10) / 10) + ' — de bot telt de fees zelf al op.)';
       note.className = 'note ' + (loss > 3 ? 'down' : 'up');
-    } catch (e){ note.textContent = 'Meten mislukt: ' + e.message; note.className = 'note down'; }
+    } catch (e){ if (chartToken() === tok){ note.textContent = 'Meten mislukt: ' + e.message; note.className = 'note down'; } }
   }
   $('costBtn').addEventListener('click', () => { measureCost(); });
 
-  // ---------- optimizer: search settings on the first 70% of the period, check them on the last 30% ----------
+  // ---------- optimizer: learn on the first 60% of the period, choose on the next 20%, honest test on the last 20% ----------
   let lastPeriod = null;   // { bars, start } from the last period backtest
   async function runOptimizer(){
     const el = $('optBody'); el.style.display = '';
     if (!lastPeriod){ el.innerHTML = '<span class="down">Draai eerst een periode-backtest (▶ Start backtest); de optimizer gebruikt dezelfde candles.</span>'; return; }
+    if (lastPeriod.token && lastPeriod.token !== chartToken()){ el.innerHTML = '<span class="down">De laatste periode-backtest was voor een andere coin. Draai eerst ▶ Start backtest voor de coin die nu op het scherm staat.</span>'; return; }
     const { bars, start } = lastPeriod;
+    const optToken = lastPeriod.token;
     const base = getParams();
     const inPeriod = bars.filter(b => b.time >= start);
     if (inPeriod.length < 200){ el.innerHTML = '<span class="down">Te weinig candles in de periode (' + inPeriod.length + ') om eerlijk te testen.</span>'; return; }
-    const split = inPeriod[Math.floor(inPeriod.length * 0.7)].time;
+    // learn 60% → choose 20% → honest test 20% (the test part never influences the choice)
+    const split1 = inPeriod[Math.floor(inPeriod.length * 0.6)].time, split = inPeriod[Math.floor(inPeriod.length * 0.8)].time;
     const stake = Math.min(100, Math.max(1, Number($('wkStake').value) || 100)) / 100;
+    // 24 sensible settings (signal kind × exit style × bigger-timeframe filter), the same list the bot's auto-tune uses.
+    // Thousands of combinations always produce something that looks good by luck on a few weeks of one coin.
     const sets = [
       ['EMA', { useEma: true, useRev: false, useBrk: false }], ['Dip', { useEma: false, useRev: true, useBrk: false }],
-      ['Breakout', { useEma: false, useRev: false, useBrk: true }], ['EMA+Breakout', { useEma: true, useRev: false, useBrk: true }],
-      ['Alle drie', { useEma: true, useRev: true, useBrk: true }]
+      ['Breakout', { useEma: false, useRev: false, useBrk: true }], ['Alle drie', { useEma: true, useRev: true, useBrk: true }]
     ];
+    const exits = [['krap', { atrMultSL: 1.0, rrTp1: 1.0, rrTp2: 2 }], ['normaal', { atrMultSL: 1.5, rrTp1: 1.5, rrTp2: 3 }], ['ruim', { atrMultSL: 2.0, rrTp1: 1.5, rrTp2: 5 }]];
     const combos = [];
-    [3, 5, 8, 12].forEach(f => [13, 21, 34, 55].forEach(sl => { if (f < sl)
-      [0.8, 1.0, 1.5, 2.0].forEach(a => [0.8, 1.0, 1.5].forEach(t1 => [2, 3, 5].forEach(t2 => sets.forEach(([nm, flags]) => [true, false].forEach(tr => [false, true].forEach(hf =>
-        combos.push({ nm: nm + (tr ? ' · trend' : '') + (hf ? ' · grote tf' : ''), p: Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr, useHtf: hf }) })))))));
-    }));
+    sets.forEach(([nm, flags]) => exits.forEach(([en, ex]) => [false, true].forEach(hf =>
+      combos.push({ nm: nm + ' · ' + en + (hf ? ' · grote tf' : ''), p: Object.assign({}, base, flags, ex, { useTrend: true, useHtf: hf }) }))));
     const score = trades => {
       let e = 1, peak = 1, dd = 0; trades.forEach(t => { e *= 1 + stake * t.ret; peak = Math.max(peak, e); dd = Math.min(dd, e / peak - 1); });
       return { e, dd, n: trades.length, win: trades.length ? trades.filter(t => t.ret > 0).length / trades.length : 0 };
     };
     const evalP = pp => {
-      const tr = runEngine(bars, pp).trades.filter(t => t.entryTime >= start);
-      return { train: score(tr.filter(t => t.entryTime < split)), test: score(tr.filter(t => t.entryTime >= split)) };
+      const tr = runEngine(bars, pp).trades.filter(t => t.entryTime >= start && !t.open);
+      return { train: score(tr.filter(t => t.entryTime < split1)), val: score(tr.filter(t => t.entryTime >= split1 && t.entryTime < split)), test: score(tr.filter(t => t.entryTime >= split)) };
     };
     $('optBtn').disabled = true;
     const results = [];
     const t0 = performance.now();
+    let tick = performance.now();
+    const breathe = async msg => { if (performance.now() - tick > 30){ if (msg) el.textContent = msg; await new Promise(res => setTimeout(res, 0)); tick = performance.now(); } };   // keep the page responsive
     for (let i = 0; i < combos.length; i++){
       const r = evalP(combos[i].p);
       // needs enough trades; rank on growth per unit of drawdown so one lucky spike does not win
-      if (r.train.n >= 6) results.push(Object.assign(r, combos[i], { rank: Math.log(r.train.e) / (1 + 3 * Math.abs(r.train.dd)) }));
-      if (i % 40 === 0){
-        el.textContent = 'Testen… ' + i + ' / ' + combos.length + ' combinaties';
-        await new Promise(res => setTimeout(res, 0));   // keep the page responsive
-      }
+      if (r.train.n >= 6) results.push(Object.assign(r, combos[i], { rank: rankOf(r.train) }));
+      await breathe('Testen… ' + i + ' / ' + combos.length + ' combinaties');
     }
     results.sort((a, b) => b.rank - a.rank);
-    // stage 2: on the 30 best, also try "let profits run" and "re-enter in the trend"
+    // stage 2: on the 10 best, also try "let profits run", "re-enter", other max-loss and filters
     const extra = [];
-    results.slice(0, 30).forEach(r => [[' · laten lopen', { letRun: true }], [' · herinstap', { useCont: true }], [' · laten lopen + herinstap', { letRun: true, useCont: true }]].forEach(([nm2, v]) => {
+    const stage2 = [];
+    results.slice(0, 10).forEach(r => [[' · laten lopen', { letRun: true }], [' · herinstap', { useCont: true }], [' · laten lopen + herinstap', { letRun: true, useCont: true }],
+      [' · zonder max-verlies/snel uit', { maxLossPct: 0, quickBars: 0 }], [' · zonder SOL-filter', { marketOk: null }], [' · max 3% verlies', { maxLossPct: 3, lossMode: 'skip' }], [' · max 8% verlies', { maxLossPct: 8, lossMode: 'skip' }], [' · snel uit na 3', { quickBars: 3 }], [' · zonder patroonfilter', { usePatterns: false }], [' · trend-kwaliteit ≥ 0.3', { minEr: 0.3 }]].forEach(([nm2, v]) => stage2.push([r, nm2, v])));
+    for (let i = 0; i < stage2.length; i++){
+      const [r, nm2, v] = stage2[i];
       const r2 = evalP(Object.assign({}, r.p, v));
-      if (r2.train.n >= 6) extra.push(Object.assign(r2, { nm: r.nm + nm2, p: Object.assign({}, r.p, v), rank: Math.log(r2.train.e) / (1 + 3 * Math.abs(r2.train.dd)) }));
-    }));
+      if (r2.train.n >= 6) extra.push(Object.assign(r2, { nm: r.nm + nm2, p: Object.assign({}, r.p, v), rank: rankOf(r2.train) }));
+      await breathe('Extra varianten… ' + i + ' / ' + stage2.length);
+    }
     results.push(...extra);
     results.sort((a, b) => b.rank - a.rank);
     const cur = evalP(base);
     const bhOf = (from, to) => { const a = bars.find(b => b.time >= from), z = [...bars].reverse().find(b => b.time < to) || bars[bars.length - 1]; return a && z ? z.close / a.close - 1 : 0; };
     const bhTest = bhOf(split, Infinity);
     const f = x => pct(x - 1);
-    const row = (label, r, idx) => '<tr><td>' + label + '</td><td>' + r.train.n + ' / ' + r.test.n + '</td>'
+    const row = (label, r, idx) => '<tr><td>' + label + '</td><td>' + r.train.n + ' / ' + r.val.n + ' / ' + r.test.n + '</td>'
       + '<td class="' + (r.train.e >= 1 ? 'up' : 'down') + '">' + f(r.train.e) + '</td>'
+      + '<td class="' + (r.val.e >= 1 ? 'up' : 'down') + '">' + f(r.val.e) + '</td>'
       + '<td class="' + (r.test.e >= 1 ? 'up' : 'down') + '"><b>' + f(r.test.e) + '</b></td>'
       + '<td class="down">' + pct(r.test.dd) + '</td>'
       + '<td>' + (idx == null ? '' : '<button class="ghost" data-opt="' + idx + '" style="padding:4px 10px;">Gebruik</button>') + '</td></tr>';
-    const top = results.slice(0, 6);
-    const holds = top.filter(r => r.test.e > 1 && r.test.e - 1 > bhTest && r.test.n >= 3);
-    let html = '<div class="tbl-wrap"><table class="bt"><thead><tr><th>Instellingen</th><th>Trades (leer / test)</th><th>Leerdeel (70%)</th><th>Testdeel (30%)</th><th>Max DD test</th><th></th></tr></thead><tbody>'
+    // of the 10 best on the learn part, sorted by the CHOOSE part — the test column only shows how honest that choice was
+    const top = results.slice(0, 10).filter(r => r.val.n >= 4).sort((a, b) => b.val.e - a.val.e).slice(0, 6);
+    // only the ONE setting chosen on the choose part gets a "Gebruik" button: picking a row because its test column looks good
+    // would turn the honest test into just another learn part
+    const chosen = top[0];
+    const holds = chosen && chosen.val.e > 1 && chosen.test.e > 1 && chosen.test.e - 1 > bhTest && chosen.test.n >= 4 ? [chosen] : [];
+    let html = '<div class="tbl-wrap"><table class="bt"><thead><tr><th>Instellingen</th><th>Trades (leer / kies / test)</th><th>Leerdeel (60%)</th><th>Kiesdeel (20%)</th><th>Testdeel (20%)</th><th>Max DD test</th><th></th></tr></thead><tbody>'
       + row('Jouw huidige', cur, null)
-      + top.map((r, i) => row(esc(r.nm) + ' · EMA ' + r.p.emaFastLen + '/' + r.p.emaSlowLen + ' · SL ' + r.p.atrMultSL + '×ATR · TP ' + r.p.rrTp1 + '/' + r.p.rrTp2, r, i)).join('')
-      + '<tr class="bh"><td>Vasthouden (testdeel)</td><td></td><td></td><td class="' + (bhTest >= 0 ? 'up' : 'down') + '">' + pct(bhTest) + '</td><td></td><td></td></tr></tbody></table></div>';
+      + top.map((r, i) => row((i === 0 ? '⭐ Gekozen: ' : '') + esc(r.nm) + ' · EMA ' + r.p.emaFastLen + '/' + r.p.emaSlowLen + ' · SL ' + r.p.atrMultSL + '×ATR · TP ' + r.p.rrTp1 + '/' + r.p.rrTp2, r, i === 0 && holds.length ? 0 : null)).join('')
+      + '<tr class="bh"><td>Vasthouden (testdeel)</td><td></td><td></td><td></td><td class="' + (bhTest >= 0 ? 'up' : 'down') + '">' + pct(bhTest) + '</td><td></td><td></td></tr></tbody></table></div>';
     html += '<div class="' + (holds.length ? 'note up' : 'warnbox') + '" style="margin-top:8px;">' + (holds.length
-      ? '✓ ' + holds.length + ' van de beste combinaties maken ook in het testdeel winst én doen het beter dan vasthouden. Dat is een beter teken dan alleen goede cijfers in het leerdeel — maar nog steeds geen garantie.'
-      : '⚠️ Geen van de beste combinaties houdt stand in het testdeel (winst én beter dan vasthouden). De "beste" instellingen passen dan vooral toevallig op het verleden. Pas ze liever niet toe, of probeer een andere coin/timeframe.')
-      + ' Getest: ' + combos.length + ' combinaties in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s. De optimizer kiest alleen op het leerdeel; het testdeel heeft hij "niet gezien".</div>';
+      ? '✓ De gekozen instelling (⭐) maakt ook in het testdeel winst met minstens 4 trades én doet het beter dan vasthouden. Dat is een beter teken dan alleen goede cijfers in het leerdeel — maar nog steeds geen garantie. De andere rijen zijn alleen ter vergelijking (kies niet op de testkolom, dan is de test niet eerlijk meer).'
+      : !chosen ? '⚠️ Geen enkele combinatie had genoeg trades (minstens 6 in het leerdeel en 4 in het kiesdeel) om eerlijk te kiezen. Kies een langere periode of kleinere candles.'
+      : '⚠️ De gekozen instelling (⭐) houdt geen stand in het testdeel (winst met minstens 4 trades én beter dan vasthouden). Die past dan vooral toevallig op het verleden. Pas hem liever niet toe, of test een andere coin/timeframe/langere periode.')
+      + ' Getest: ' + combos.length + ' combinaties in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s. De optimizer leert op 60%, kiest op de volgende 20% en het laatste 20% (testdeel) heeft geen enkele rol gespeeld bij de keuze — dát is de eerlijke uitslag.</div>';
+    if (optToken && chartToken() !== optToken){ el.innerHTML = '<span class="down">Je bent van coin gewisseld tijdens het zoeken — resultaat weggegooid. Draai de backtest en optimizer opnieuw voor deze coin.</span>'; $('optBtn').disabled = false; return; }
     el.innerHTML = html;
     el.querySelectorAll('[data-opt]').forEach(btn => btn.addEventListener('click', () => {
       const r = top[Number(btn.dataset.opt)]; if (!r) return;
-      ['emaFastLen','emaSlowLen','atrMultSL','rrTp1','rrTp2'].forEach(k => { $(k).value = r.p[k]; });
-      ['useEma','useRev','useBrk','useTrend','useHtf','letRun','useCont'].forEach(k => { $(k).checked = !!r.p[k]; });
+      ['emaFastLen','emaSlowLen','atrMultSL','rrTp1','rrTp2','maxLossPct','quickBars'].forEach(k => { $(k).value = r.p[k]; });
+      $('lossMode').value = r.p.lossMode === 'tighten' ? 'tighten' : 'skip';
+      $('minEr').value = r.p.minEr || 0;
+      ['useEma','useRev','useBrk','useTrend','useHtf','letRun','useCont','usePatterns'].forEach(k => { $(k).checked = !!r.p[k]; });
+      if (r.p.marketOk === null) $('useMarket').checked = false;   // the tested variant ran without the SOL filter: apply exactly that
       saveSettings(); renderCurrentParamsOnly();
       btn.textContent = 'Toegepast ✓';
+      const vars = 'EMA_FAST=' + r.p.emaFastLen + '\nEMA_SLOW=' + r.p.emaSlowLen + '\nATR_MULT_SL=' + r.p.atrMultSL + '\nRR_TP1=' + r.p.rrTp1 + '\nRR_TP2=' + r.p.rrTp2
+        + '\nUSE_EMA=' + (r.p.useEma ? 1 : 0) + '\nUSE_REV=' + (r.p.useRev ? 1 : 0) + '\nUSE_BRK=' + (r.p.useBrk ? 1 : 0) + '\nUSE_TREND=' + (r.p.useTrend ? 1 : 0)
+        + '\nUSE_HTF=' + (r.p.useHtf ? 1 : 0) + '\nLET_RUN=' + (r.p.letRun ? 1 : 0) + '\nUSE_CONT=' + (r.p.useCont ? 1 : 0)
+        + '\nMAX_LOSS_PCT=' + r.p.maxLossPct + '\nLOSS_MODE=' + (r.p.lossMode === 'tighten' ? 'tighten' : 'skip') + '\nQUICK_EXIT_BARS=' + r.p.quickBars + '\nMIN_ER=' + (r.p.minEr || 0) + '\nUSE_PATTERNS=' + (r.p.usePatterns ? 1 : 0) + '\nMARKET_FILTER=' + ($('useMarket').checked ? 1 : 0) + '\nTIMEFRAME=' + $('wkTf').value
+        // the bot adds the fixed network fees itself (from TRADE_AMOUNT_SOL): don't count them twice
+        + '\nCOST_PCT=' + Math.max(0.1, Math.round((Number($('costPct').value) - 0.0004 / Math.max(0.001, Number($('costSol').value) || 0.05) * 100) * 10) / 10)
+        + '\nTRADE_AMOUNT_SOL=' + (Number($('costSol').value) || 0.05) + '\nSLIP_PCT=' + $('slipPct').value;
+      let box = $('optVars');
+      if (!box){ box = document.createElement('div'); box.id = 'optVars'; el.appendChild(box); }
+      box.innerHTML = '<h2 style="margin-top:12px;">Zelfde instellingen in je Railway-bot</h2><div class="note">Railway → je bot → <b>Variables</b> → <b>Raw Editor</b>: plak deze regels erbij (bestaande regels met dezelfde naam vervangen) en klik Update. Of laat <code>AUTO_TUNE=1</code> staan, dan zoekt de bot zelf.</div>'
+        + '<textarea class="paste-area" readonly style="min-height:150px;">' + esc(vars) + '</textarea>';
     }));
     $('optBtn').disabled = false;
   }
@@ -2727,7 +3151,8 @@
       const res = await fetchWithTimeout('https://api.dexscreener.com/latest/dex/tokens/' + watchlist.slice(0, 30).map(w => w.addr).join(','), undefined, 9000);
       const data = await res.json();
       const best = {};
-      ((data && data.pairs) || []).filter(pr => pr.chainId === 'solana').forEach(pr => {
+      const inList = new Set(watchlist.map(w => w.addr));
+      ((data && data.pairs) || []).filter(pr => pr.chainId === 'solana' && pr.baseToken && inList.has(pr.baseToken.address)).forEach(pr => {
         const a = pr.baseToken.address; const l = (pr.liquidity && pr.liquidity.usd) || 0;
         if (!best[a] || l > best[a].l) best[a] = { l, pr };
       });
@@ -2757,7 +3182,7 @@
     const val = r => k === 'sym' ? r.sym : k === 'sig' ? (r.sigRank || 0) : (r[k] == null || Number.isNaN(r[k]) ? -1e18 : r[k]);
     const rows = [...rdRows].sort((a, b) => { const x = val(a), y = val(b); return (x > y ? 1 : x < y ? -1 : 0) * dir; });
     tb.innerHTML = rows.map(r => '<tr data-addr="' + esc(r.token) + '">'
-      + '<td><b>' + esc(r.sym || '?') + '</b><div class="note" style="margin:0;">' + esc((r.name || '').slice(0, 22)) + '</div></td>'
+      + '<td><b>' + esc(r.sym || '?') + '</b>' + botAddLinks(r.token) + '<div class="note" style="margin:0;">' + esc((r.name || '').slice(0, 22)) + '</div></td>'
       + '<td>' + (r.mcap ? fmtUsd(r.mcap) : '–') + '</td><td>' + (r.liq ? fmtUsd(r.liq) : '–') + '</td>'
       + '<td class="' + (r.chg > 0 ? 'up' : r.chg < 0 ? 'down' : '') + '">' + (Number.isFinite(r.chg) ? (r.chg > 0 ? '+' : '') + r.chg.toFixed(1) + '%' : '–') + '</td>'
       + '<td>' + (r.err ? '<span class="down">' + esc(r.err) + '</span>' : r.sigHtml || '<span class="note">bezig…</span>') + '</td>'
@@ -2799,7 +3224,7 @@
           const last = res.events.length ? res.events[res.events.length - 1] : null;
           const secs = (unit === 'second' ? 1 : unit === 'minute' ? 60 : 3600) * Number(agg);
           const age = last ? Math.round((bars[bars.length - 1].time - last.time) / secs) : null;
-          if (last && last.type === 'BUY' && age <= 2){ r.sigHtml = '<span class="sig-fresh">🟢 VERSE BUY</span>'; r.sigRank = 3; fresh.push(r); }
+          if (last && last.type === 'BUY' && age <= 2){ r.sigHtml = '<span class="sig-fresh">🟢 VERSE BUY</span>'; r.sigRank = 3; r.sigTime = last.time; fresh.push(r); }
           else if (res.state.inPos){ r.sigHtml = '<span class="up">in positie</span>' + (age != null ? ' <span class="note">(' + age + ' candles)</span>' : ''); r.sigRank = 2; }
           else if (last){ r.sigHtml = esc(last.type) + ' <span class="note">' + age + ' candles geleden</span>'; r.sigRank = 1; }
           else { r.sigHtml = '<span class="note">geen signaal</span>'; r.sigRank = 0; }
@@ -2809,9 +3234,9 @@
       st.textContent = 'Klaar · ' + rdRows.length + ' coins · ' + new Date().toLocaleTimeString('nl-NL') + ' · "Strategie" = resultaat van jouw instellingen op de laatste ± 300 candles, kosten ' + p.costPct + '% per trade. Klik op een kolomkop om te sorteren.';
       st.className = 'note ok';
       fresh.forEach(r => {
-        const key = r.token + '-' + Math.floor(Date.now() / 600000);
-        if (rdAlerted.has(r.token)) return;
-        rdAlerted.add(r.token);
+        const key = r.token + '-' + r.sigTime;   // one alert per BUY signal
+        if (rdAlerted.has(key)) return;
+        rdAlerted.add(key);
         try { if (notifOn) new Notification('Radar: verse BUY op ' + r.sym, { body: 'MCap ' + fmtUsd(r.mcap) + ' · liq ' + fmtUsd(r.liq) }); } catch (_){}
       });
     } catch (e){
@@ -2831,6 +3256,7 @@
     renderRadar();
   });
   $('rdBody').addEventListener('click', e => {
+    if (e.target.closest('a.minibot')) return;
     const tr = e.target.closest('tr[data-addr]'); if (!tr) return;
     $('tokenAddr').value = tr.dataset.addr;
     loadLive();
@@ -2841,11 +3267,13 @@
   function setPickMode(on){
     if (on && typeof setPredMode === 'function' && $('predView').style.display !== 'none') setPredMode(false);
     if (on && $('walletView').style.display !== 'none') setWalletMode(false);
+    if (on && $('dashView').style.display !== 'none') setDashMode(false);
     document.querySelector('.wrap').classList.toggle('pick-mode', on);
     $('pickView').style.display = on ? '' : 'none';
     $('pickNavBtn').textContent = on ? '📈 Terug naar terminal' : '🏆 Coins voor de bot';
     if (on && location.hash !== '#coins') history.replaceState(null, '', '#coins');
     if (!on && location.hash === '#coins') history.replaceState(null, '', location.pathname + location.search);
+    if (!on) setTimeout(loadChartIfTerminal, 0);   // back to the terminal: load the chart we skipped at start
     if (!on && chart) setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
   }
   $('pickNavBtn').addEventListener('click', () => setPickMode($('pickView').style.display === 'none'));
@@ -2923,18 +3351,15 @@
           try {
             const q1 = await jupiterQuote(SOL_MINT, r.token, lamports, 300);
             const q2 = await jupiterQuote(r.token, SOL_MINT, q1.outAmount, 300);
-            r.cost = Math.max(0.3, (1 - Number(q2.outAmount) / lamports) * 100 + 0.2);
+            // same as "💶 Meet echte kosten": round trip + small margin + the fixed network fees (≈0.0004 SOL per buy+sell) as % of the stake
+            r.cost = Math.max(0.3, (1 - Number(q2.outAmount) / lamports) * 100 + 0.2) + 0.0004 / Math.max(0.001, stakeSol) * 100;
           } catch (_){ r.cost = null; why.push('geen koop/verkoop-route via Jupiter'); }
           if (r.cost != null && r.cost > 3) why.push('kopen + verkopen kost ' + r.cost.toFixed(1) + '%');
           // safety (mint / freeze authority)
           try { const pr = await checkMint(r.token); if (pr.length) why.push(pr.join(' · ')); }
           catch (_){ r.safetyUnknown = true; }
           // the strategy on the period, with this coin's real cost
-          const key = r.pool + '|' + unit + '|' + agg;
-          const cached = historyCache.get(key);
-          const bars = cached && Date.now() - cached.t < 300000 && cached.from <= start - warm * secs ? cached.bars
-            : await fetchHistory('solana', r.pool, unit, agg, start - warm * secs, null, r.token);
-          if (!bars.partialError) historyCache.set(key, { bars, t: Date.now(), from: start - warm * secs });
+          const bars = await getHistory('solana', r.pool, unit, agg, start - warm * secs, null, r.token);
           const inPeriod = bars.filter(b => b.time >= start);
           if (inPeriod.length < 60) throw new Error('te weinig candles (' + inPeriod.length + ') — coin te jong voor deze periode');
           const p = Object.assign({}, base, { costPct: r.cost != null ? Math.round(r.cost * 10) / 10 : base.costPct });
@@ -3015,15 +3440,23 @@
       let data;
       try { const res = await fetchWithTimeout('https://api.dexscreener.com/latest/dex/tokens/' + part.map(q => q.token).join(','), undefined, 9000); data = await res.json(); }
       catch (_){ return learned; }
-      const priceOf = {};
-      ((data && data.pairs) || []).forEach(pr => { if (pr.pairAddress && pr.priceUsd) priceOf[pr.pairAddress] = Number(pr.priceUsd); });
+      // price per TOKEN from its most liquid pool: a coin that moves to a new pool (pump.fun → Raydium) is not a "rug"
+      const priceOf = {}, liqOf = {};
+      ((data && data.pairs) || []).forEach(pr => {
+        const a = pr.baseToken && pr.baseToken.address, l = Number(pr.liquidity && pr.liquidity.usd) || 0;
+        if (a && Number(pr.priceUsd) > 0 && (!(a in liqOf) || l > liqOf[a])){ liqOf[a] = l; priceOf[a] = Number(pr.priceUsd); }
+      });
+      const scanMs = Number($('pdAuto').value) || 0;
       part.forEach(q => {
-        const p2 = priceOf[q.pool];
-        if (!(p2 > 0)){ if (now - q.t > q.h * 3) q.drop = true; return; }   // pool gone for too long: likely rugged → counts as a loss
+        const p2 = priceOf[q.token];
+        // token gone from every pool for a long time: likely rugged → counts as a loss (checked first: a rug is never "too late")
+        if (!(p2 > 0)){ if (now - q.t > q.h * 3) q.drop = true; return; }
+        // measured much later than the chosen horizon (page was closed): that return says nothing about the horizon → don't learn from it
+        if (now - (q.t + q.h) > Math.max(15 * 60000, q.h * 0.25, scanMs * 1.5)){ q.skip = true; return; }
         const ret = p2 / q.price - 1;
         q.ret = ret; q.y = ret > cost ? 1 : 0;
       });
-      part.filter(q => q.drop).forEach(q => { q.ret = -1; q.y = 0; });
+      part.filter(q => q.drop && !q.skip).forEach(q => { q.ret = -1; q.y = 0; });
       part.filter(q => q.y != null).forEach(q => {
         const pz = pdScore(q.x), lr = 0.05;
         for (let i = 0; i < pd.w.length; i++) pd.w[i] -= lr * ((pz - q.y) * q.x[i] + 0.001 * pd.w[i]);
@@ -3032,7 +3465,7 @@
         learned++;
       });
     }
-    const doneSet = new Set(due.filter(q => q.y != null).map(q => q.token + q.t));
+    const doneSet = new Set(due.filter(q => q.y != null || (q.skip && !q.drop)).map(q => q.token + q.t));
     pd.pending = pd.pending.filter(q => !doneSet.has(q.token + q.t));
     if (pd.done.length > 3000) pd.done = pd.done.slice(-3000);
     pdSave();
@@ -3064,7 +3497,7 @@
     $('pdTable').style.display = pdRows.length ? '' : 'none';
     const f = v => Number.isFinite(v) ? '<span class="' + (v > 0 ? 'up' : v < 0 ? 'down' : '') + '">' + (v > 0 ? '+' : '') + v.toFixed(1) + '%</span>' : '–';
     $('pdBody').innerHTML = pdRows.map(r => '<tr data-addr="' + esc(r.token) + '"><td><b>' + esc(r.sym) + '</b>' + botAddLinks(r.token) + '<div class="note" style="margin:0;">' + (r.mcap ? 'MCap ' + fmtUsd(r.mcap) : '') + '</div></td>'
-      + '<td><b class="' + (r.s >= 0.55 ? 'up' : r.s < 0.4 ? 'down' : '') + '">' + Math.round(r.s * 100) + '%</b></td><td class="note" style="margin:0; max-width:300px;">' + esc(r.why || '') + '</td>'
+      + '<td><b class="' + (r.s >= 0.55 ? 'up' : r.s < 0.4 ? 'down' : '') + '">' + Math.round(r.s * 100) + '</b>' + (pd.done.length < 100 ? '<div class="note" style="margin:0;">nog niet getoetst</div>' : '') + '</td><td class="note" style="margin:0; max-width:300px;">' + esc(r.why || '') + '</td>'
       + '<td>' + f(r.m5) + '</td><td>' + f(r.h1) + '</td><td>' + f(r.h24) + '</td><td>' + (r.v1 ? fmtUsd(r.v1) : '–') + '</td><td>' + (r.buys != null ? Math.round(r.buys * 100) + '%' : '–') + '</td><td>' + fmtUsd(r.liq) + '</td></tr>').join('');
   }
   async function pdScan(){
@@ -3118,18 +3551,20 @@
   function setPredMode(on){
     if (on && $('pickView').style.display !== 'none') setPickMode(false);
     if (on && $('walletView').style.display !== 'none') setWalletMode(false);
+    if (on && $('dashView').style.display !== 'none') setDashMode(false);
     document.querySelector('.wrap').classList.toggle('pred-mode', on);
     $('predView').style.display = on ? '' : 'none';
     $('predNavBtn').textContent = on ? '📈 Terug naar terminal' : '🔮 Kansen';
     if (on && location.hash !== '#kansen') history.replaceState(null, '', '#kansen');
     if (!on && location.hash === '#kansen') history.replaceState(null, '', location.pathname + location.search);
+    if (!on) setTimeout(loadChartIfTerminal, 0);   // back to the terminal: load the chart we skipped at start
     if (on){ pdRender(); }
     if (!on && chart) setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
   }
   function pdSetupAuto(){
     if (pdTimer) clearInterval(pdTimer);
     const ms = Number($('pdAuto').value);
-    pdTimer = ms > 0 ? setInterval(() => { if ($('predView').style.display !== 'none' || pd.pending.length) pdScan(); }, ms) : null;
+    pdTimer = ms > 0 ? setInterval(() => { if (!document.hidden && ($('predView').style.display !== 'none' || pd.pending.length)) pdScan(); }, ms) : null;
   }
   pdLoad();
   $('pdHorizonTxt').textContent = $('pdHorizon').selectedOptions[0].text;
@@ -3159,19 +3594,25 @@
     const cur = currentTokenAddr && currentTokenAddr();
     const curOk = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cur || '');
     const sym = pairInfo && pairInfo.baseToken ? pairInfo.baseToken.symbol : (cur ? cur.slice(0, 4) + '…' : '');
-    $('botCtlBtns').innerHTML = bots.map(b => '<div class="botrow"><b>Bot ' + b.i + '</b>'
+    setHtml($('botCtlBtns'), bots.map(b => '<div class="botrow"><b>Bot ' + b.i + '</b>'
       + (curOk ? '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'add_' + cur) + '">➕ ' + esc(sym) + ' naar bot</a>'
                + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'del_' + cur) + '">➖ weghalen</a>' : '')
       + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'hervat') + '">▶️ Bot aan</a>'
       + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'stop') + '">⏸️ Bot uit</a>'
       + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'status') + '">📋 Status</a>'
-      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'coinlijst') + '">📃 Coins</a></div>').join('');
-    $('botCtlNote').innerHTML = bots.length
-      ? '"Bot uit" = geen nieuwe buys (verkopen gaan door). "Bot aan" werkt alleen als <code>ENABLE_LIVE_TRADES=1</code> in Railway staat — dat blijft de hoofdschakelaar. Een coin toevoegen controleert eerst of hij genoeg liquiditeit heeft.'
-      : 'Vul hierboven de naam van je bot in om de knoppen te zien.';
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'coinlijst') + '">📃 Coins</a>'
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'rapport') + '">📊 Rapport</a>'
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'geheugen') + '">☁️ Geheugen</a>'
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'oefen') + '">🎓 Oefen</a>'
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'wallets') + '">🐋 Wallets</a>'
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'jager') + '">🎯 Jager</a>'
+      + '<a class="btnlink" target="_blank" rel="noopener" href="' + tgLink(b.n, 'patronen') + '">📐 Patronen</a></div>').join(''));
+    setHtml($('botCtlNote'), bots.length
+      ? '"Bot uit" = geen nieuwe buys (verkopen gaan door). "Bot aan" werkt alleen als <code>ENABLE_LIVE_TRADES=1</code> in Railway staat — dat blijft de hoofdschakelaar. Een coin toevoegen controleert eerst of hij genoeg liquiditeit heeft. 📊 = winst/verlies per coin · ☁️ = wat de bots geleerd hebben (Supabase) · 🎓 = oefen-trades met nep-geld · 🐋 = gevolgde wallets · 🎯 = kansen die de jager vond · 📐 = welke chart-patronen winst gaven.'
+      : 'Vul hierboven de naam van je bot in om de knoppen te zien.');
   }
   setTimeout(renderBotCtl, 0);
-  ['tgBot1', 'tgBot2'].forEach(id => { $(id).addEventListener('input', () => { renderBotCtl(); if (typeof pkRender === 'function' && pkRows.length) pkRender(); if (typeof pdRender === 'function' && pdRows.length) pdRender(); }); $(id).addEventListener('change', saveSettings); });
+  ['tgBot1', 'tgBot2'].forEach(id => { $(id).addEventListener('input', () => { renderBotCtl(); if (typeof pkRender === 'function' && pkRows.length) pkRender(); if (typeof pdRender === 'function' && pdRows.length) pdRender(); if (rdRows.length) renderRadar(); }); $(id).addEventListener('change', saveSettings); });
   ['tgBot1', 'tgBot2'].forEach(id => $(id).addEventListener('input', () => { if ($('walletView').style.display !== 'none') wlRender(); }));
 
   // ---------- 🐋 wallets volgen: what do smart Solana wallets buy and sell? (all trades on Solana are public) ----------
@@ -3179,7 +3620,7 @@
   const STABLES = ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'];
   const ADDR_OK = a => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a || '');
   const shortA = a => a ? a.slice(0, 4) + '…' + a.slice(-4) : '?';
-  // identical to parseSwap in copyTrade.js (the bot) — tested together
+  // <shared:parseSwap> — generated from copyTrade.js by build-web.js, do not edit here
   function parseSwap(tx, wallet){
     if (!tx || !tx.meta || tx.meta.err) return [];
     const msg = (tx.transaction && tx.transaction.message) || {};
@@ -3219,10 +3660,14 @@
     // anything else (airdrops, plain transfers, LP stuff) is not a trade → ignored
     return out;
   }
+  // </shared:parseSwap>
   let wl = { list: [], feed: [] }, wlTimer = null, wlBusy = false, wlFound = [], wlSym = {};
   function wlLoad(){
     try { wl = JSON.parse(localStorage.getItem(WALLETS_KEY) || 'null') || { list: [], feed: [] }; } catch (_){ wl = { list: [], feed: [] }; }
     if (!Array.isArray(wl.list)) wl.list = []; if (!Array.isArray(wl.feed)) wl.feed = [];
+    const B58 = /^[1-9A-HJ-NP-Za-km-z]+$/;   // drop anything stored that isn't a plain address/signature
+    wl.feed = wl.feed.filter(f => f && B58.test(f.mint || '') && B58.test(f.sig || '') && B58.test(f.wallet || ''));
+    wl.list = wl.list.filter(w => w && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(w.addr || ''));
     wlSym = wl.sym || {};
   }
   function wlSave(){ try { wl.sym = wlSym; localStorage.setItem(WALLETS_KEY, JSON.stringify(wl)); } catch (_){} }
@@ -3270,7 +3715,8 @@
     const evs = [];
     for (const s of sigs.slice().reverse()){
       if (s.err) continue;
-      try { parseSwap(await getTx(s.signature), w.addr).forEach(e => evs.push(e)); } catch (e){ console.warn('wallet tx', e.message); }
+      // only well-formed addresses/signatures from the RPC (they end up in links and in storage)
+      try { parseSwap(await getTx(s.signature), w.addr).forEach(e => { if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(e.mint || '') && /^[1-9A-HJ-NP-Za-km-z]{1,100}$/.test(e.sig || '')) evs.push(e); }); } catch (e){ console.warn('wallet tx', e.message); }
     }
     if (!evs.length) return 0;
     await wlSymbols(evs.map(e => e.mint));
@@ -3459,12 +3905,13 @@
       + '<a class="minibot" target="_blank" rel="noopener" href="https://solscan.io/account/' + r.addr + '#defiactivities">Solscan</a></td></tr>').join('');
   }
   function setWalletMode(on){
-    if (on){ if ($('pickView').style.display !== 'none') setPickMode(false); if ($('predView').style.display !== 'none') setPredMode(false); }
+    if (on){ if ($('pickView').style.display !== 'none') setPickMode(false); if ($('predView').style.display !== 'none') setPredMode(false); if ($('dashView').style.display !== 'none') setDashMode(false); }
     document.querySelector('.wrap').classList.toggle('wallet-mode', on);
     $('walletView').style.display = on ? '' : 'none';
     $('walletNavBtn').textContent = on ? '📈 Terug naar terminal' : '🐋 Wallets';
     if (on && location.hash !== '#wallets') history.replaceState(null, '', '#wallets');
     if (!on && location.hash === '#wallets') history.replaceState(null, '', location.pathname + location.search);
+    if (!on) setTimeout(loadChartIfTerminal, 0);   // back to the terminal: load the chart we skipped at start
     if (on){ wlRender(); wlRenderFound(); if ($('wlAuto').checked) wlPoll(); }
     if (!on && chart) setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
   }
@@ -3499,13 +3946,167 @@
   });
   setTimeout(() => { wlSetupAuto(); if (location.hash === '#wallets') setWalletMode(true); }, 0);
 
+  // ---------- 📊 dashboard: what are the bots doing? (reads Supabase with the public, read-only key) ----------
+  const DB = { timer: null, chart: null, lines: {}, busy: false, lessons: new Map(), lessonsAt: '', lessonsFull: 0 };
+  function dbBase(){ return $('dbUrl').value.trim().replace(/\/+$/, '').replace(/\/rest\/v1$/, ''); }
+  // the website may only ever hold the read-only publishable/anon key — never the secret/service_role key
+  function dbKeyProblem(k){
+    const warn = ' Die hoort ALLEEN in Railway. Ik heb hem hier niet bewaard of gebruikt. Maak voor de zekerheid in Supabase een nieuwe secret-sleutel en verwijder de oude.';
+    if (/^sb_secret_/i.test(k)) return '⛔ Dit is je SECRET-sleutel.' + warn;
+    if (/^eyJ/.test(k)){
+      try {
+        const part = k.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        const role = JSON.parse(atob(part + '==='.slice((part.length + 3) % 4))).role;
+        if (role !== 'anon') return '⛔ Dit is een sleutel met rol "' + String(role).replace(/[^a-z_]/gi, '') + '" (geen anon-sleutel).' + warn;
+      } catch (e){ return 'Deze sleutel kan ik niet lezen. Gebruik de publishable sleutel (begint met sb_publishable_).'; }
+      return null;
+    }
+    if (!/^sb_publishable_/i.test(k)) return 'Dit lijkt geen publishable sleutel. Die begint met sb_publishable_ (Supabase → Project Settings → API Keys).';
+    return null;
+  }
+  function dbHeaders(){ const k = $('dbKey').value.trim(); const h = { apikey: k }; if (k.startsWith('eyJ')) h.Authorization = 'Bearer ' + k; return h; }
+  async function dbGet(path){
+    const res = await fetchWithTimeout(dbBase() + '/rest/v1/' + path, { headers: dbHeaders() }, 12000);
+    if (!res.ok){
+      const t = await res.text();
+      if (res.status === 401 || res.status === 403) throw new Error('sleutel geweigerd — gebruik de publishable (anon) sleutel, niet de secret');
+      if (res.status === 404 || /does not exist|Could not find/i.test(t)) throw new Error('tabel ontbreekt — draai de nieuwe supabase-setup.sql in Supabase');
+      throw new Error('Supabase ' + res.status);
+    }
+    return res.json();
+  }
+  const dbAgo = iso => { const s = (Date.now() - Date.parse(iso)) / 1000; return s < 90 ? Math.round(s) + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : Math.round(s / 3600) + ' u'; };
+  const solTxt = x => (x >= 0 ? '+' : '') + Number(x || 0).toFixed(4) + ' SOL';
+  const statLine = (label, s) => s && Number(s.n) > 0 ? '<tr><td>' + label + '</td><td>' + N0(s.n) + '</td><td>' + Math.round(N0(s.wins) / N0(s.n) * 100) + '%</td><td class="' + (Number(s.pnl) >= 0 ? 'up' : 'down') + '">' + solTxt(Number(s.pnl) || 0) + '</td><td>' + (s.pf != null && Number.isFinite(Number(s.pf)) ? Number(s.pf) : (s.pf != null ? '∞' : '–')) + '</td></tr>'
+    : '<tr><td>' + label + '</td><td>0</td><td>–</td><td>–</td><td>–</td></tr>';
+  function dbKeyName(key, syms){
+    const at = key.lastIndexOf('@'), base = at > key.indexOf(':') ? key.slice(0, at) : key, tf = at > key.indexOf(':') ? ' (' + key.slice(at + 1) + ')' : '';
+    const [t, v] = [base.slice(0, base.indexOf(':')), base.slice(base.indexOf(':') + 1)];
+    if (t === 'patroon') return 'patroon "' + (PATTERN_NAMES[v] || v) + '"' + tf;
+    if (t === 'coin') return 'coin ' + (syms[v] || shortA(v));
+    if (t === 'wallet') return 'wallet ' + shortA(v);
+    if (t === 'src') return v.split('+').map(x => ({ REV: 'Dip', BRK: 'Breakout', CONT: 'Herinstap' })[x] || x).join('+') + '-signalen' + tf;
+    if (t === 'uur') return 'kopen tussen ' + v.replace('-', ':00 en ') + ':00';
+    if (t === 'liq') return 'liquiditeit ' + v;
+    return key;
+  }
+  const N0 = x => Math.max(0, Math.round(Number(x) || 0));   // numbers from the database are shown as numbers only
+  function dbBotCard(row){
+    const d = row.data || {}, o = d.oefen || {}, r = (o.ready || {}), j = d.jager || {}, e = d.echt || {};
+    const stale = Date.now() - Date.parse(row.updated_at) > 10 * 60000;
+    const pct = Math.max(0, Math.min(100, Number(r.pct) || 0));
+    return '<div class="card dbbot">'
+      + '<div class="row" style="justify-content:space-between;"><h2 style="margin:0;">🤖 ' + esc(row.bot) + '</h2><span class="note ' + (stale ? 'down' : 'up') + '" style="margin:0;">' + (stale ? '⚠️ ' : '● ') + dbAgo(row.updated_at) + ' geleden' + (stale ? ' — draait de bot nog?' : '') + '</span></div>'
+      + '<div class="note" style="margin:6px 0;">' + (d.live ? '<b class="up">Live handelen AAN</b>' : '<b>Live handelen uit</b> (alleen oefenen)') + (d.stopped ? ' · ⏸️ /stop' : '')
+      + ' · ' + esc(d.tf || '') + ' · SOL-markt: ' + (d.market === 'omlaag' ? '<span class="down">📉 daalt</span>' : esc(d.market || '?')) + '</div>'
+      + '<div class="k" style="font-size:0.7rem;color:var(--muted);margin-top:8px;">KLAAR VOOR ECHT GELD?</div>'
+      + '<div class="bar" style="height:9px;"><i style="width:' + pct + '%;' + (r.bad ? 'background:var(--sell);' : r.ready ? 'background:var(--buy);' : '') + '"></i></div>'
+      + '<div class="note" style="margin-top:4px;">' + esc(r.text || '') + '</div>'
+      + '<table class="bt" style="margin-top:8px;"><thead><tr><th>Oefen-trades</th><th>Aantal</th><th>Winst</th><th>Resultaat</th><th>PF</th></tr></thead><tbody>'
+      + statLine('Alles' + (o.hist ? ' (' + N0(o.hist) + ' historie)' : ''), o.all) + statLine('Vooruit', o.fwd) + statLine('Vooruit + lessen', o.ok) + statLine('Zoals de Jager koopt', o.hunt) + '</tbody></table>'
+      + (o.huntReady ? '<div class="note">' + esc(o.huntReady.text || '') + '</div>' : '')
+      + (Array.isArray(o.groups) && o.groups.length ? '<div class="note"><b>Per coin-groep</b> (echt geld alleen waar ✅): ' + o.groups.map(x => esc(String(x.g)) + ' ' + (x.ready ? '✅' : x.bad ? '❌' : '⏳ ' + N0(x.pct) + '%') + ' (' + N0(x.n) + ')').join(' · ') + '</div>' : '')
+      + '<div class="note">Oefent op ' + (Array.isArray(o.coins) ? o.coins.length : 0) + ' coins' + (Array.isArray(o.coins) && o.coins.length ? ': ' + esc(o.coins.slice(0, 15).join(', ')) : '') + ' · al ' + N0(o.seen) + ' coins bekeken</div>'
+      + '<div class="note"><b>Echte trades:</b> ' + N0(e.n) + ' · ' + solTxt(Number(e.pnl) || 0) + (Array.isArray(e.last) && e.last.length ? ' · laatste: ' + e.last.slice(0, 5).map(t => esc(t.sym || '?') + ' <span class="' + (Number(t.pnl) >= 0 ? 'up' : 'down') + '">' + (Number(t.pnl) >= 0 ? '+' : '') + (Number(t.pnl) || 0).toFixed(4) + '</span>').join(' · ') : '') + '</div>'
+      + '<div class="note"><b>Coins:</b> ' + ((d.coins || []).map(c => esc(c.sym) + (c.pos ? ' 💼' : '') + (c.paused ? ' ⏸️' : '') + (c.exitOnly ? ' (alleen verkopen)' : '')).join(', ') || '–') + '</div>'
+      + '<div class="note" style="margin-top:8px;"><b>🎯 Jager</b> ' + (j.live ? '(koopt echt)' : '(meldt alleen)') + ' · ' + N0(j.open) + ' open</div>'
+      + '<div class="feed" style="max-height:160px;">' + ((j.log || []).slice(0, 8).map(x => '<div class="feed-item"><span class="tag ' + (x.ok ? 'BUY' : 'SL') + '">' + (x.ok ? 'KANS' : 'NEE') + '</span><span>' + esc(x.sym) + ' · ' + esc(x.src) + (x.pats && x.pats.length ? ' · ' + esc(x.pats.join(', ')) : '') + (x.ok ? (x.action ? ' → ' + esc(x.action) : '') : ' — ' + esc(x.why || '')) + '</span><span class="t">' + new Date(x.t).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' }) + '</span></div>').join('') || '<div class="feed-empty">Nog geen signalen.</div>') + '</div>'
+      + '</div>';
+  }
+  function dbDrawChart(trades){
+    const el = $('dbChart');
+    if (!DB.chart){
+      const c = chartColors();
+      DB.chart = LightweightCharts.createChart(el, { layout: { background: { color: 'transparent' }, textColor: c.text, fontFamily: 'JetBrains Mono, monospace', fontSize: 11 },
+        grid: { vertLines: { color: c.grid + '55' }, horzLines: { color: c.grid + '55' } }, rightPriceScale: { borderColor: c.grid }, timeScale: { borderColor: c.grid, timeVisible: true }, autoSize: true });
+      DB.lines.papier = DB.chart.addLineSeries({ color: c.slow, lineWidth: 2, title: 'oefen' });
+      DB.lines.echt = DB.chart.addLineSeries({ color: c.up, lineWidth: 2, title: 'echt' });
+    }
+    ['papier', 'echt'].forEach(kind => {
+      const list = trades.filter(t => kind === 'echt' ? (t.kind === 'strategie' || t.kind === 'kopie') : (t.kind === 'papier' || t.kind === 'nep-kopie'));
+      let cum = 0; const pts = new Map();
+      list.forEach(t => { cum += Number(t.pnl_sol) || 0; pts.set(Math.floor(Date.parse(t.created_at) / 60000) * 60, cum); });
+      DB.lines[kind].setData([...pts.entries()].map(([time, value]) => ({ time, value })));
+    });
+  }
+  async function dbLoad(){
+    const st = $('dbStatus');
+    if (!/^https:\/\/[a-z0-9-]+\.supabase\.(co|in)$/i.test(dbBase())){ st.textContent = 'Vul je Supabase-adres in, zoals https://jouwproject.supabase.co'; st.className = 'note down'; return; }
+    if ($('dbKey').value.trim().length < 20){ st.textContent = 'Vul de publishable (anon) sleutel in — Supabase → Project Settings → API Keys.'; st.className = 'note down'; return; }
+    const keyErr = dbKeyProblem($('dbKey').value.trim());
+    if (keyErr){ $('dbKey').value = ''; saveSettings(); st.textContent = keyErr; st.className = 'note down'; return; }
+    if (DB.busy) return; DB.busy = true; $('dbLoad').disabled = true;
+    st.textContent = 'Laden…'; st.className = 'note';
+    try {
+      const since = new Date(Date.now() - 6 * 86400000).toISOString();
+      const [bots, lessons, trades, best] = await Promise.allSettled([
+        dbGet('bot_status?select=*&order=bot.asc'),
+        // lessons: only the ones that changed since the last load (a full reload once an hour)
+        (DB.lessonsAt && Date.now() - DB.lessonsFull < 3600000
+          ? dbGet('lessons?select=key,n,wins,pnl_sol,last_at&last_at=gt.' + encodeURIComponent(DB.lessonsAt) + '&order=last_at.desc&limit=1000')
+          : dbGet('lessons?select=key,n,wins,pnl_sol,last_at&order=last_at.desc&limit=1000').then(rows => { DB.lessons = new Map(); DB.lessonsFull = Date.now(); return rows; }))
+          .then(rows => { (rows || []).forEach(x => { DB.lessons.set(String(x.key || ''), x); if (x.last_at && String(x.last_at) > DB.lessonsAt) DB.lessonsAt = String(x.last_at); }); return [...DB.lessons.values()]; }),
+        dbGet('trades?select=created_at,bot,kind,mint,symbol,pnl_sol,good&created_at=gte.' + encodeURIComponent(since) + '&order=created_at.desc&limit=1000'),
+        dbGet('trades?select=created_at,bot,kind,symbol,pnl_sol,pnl_pct,exit,source&good=eq.true&order=pnl_sol.desc&limit=10'),
+      ]);
+      const errs = [bots, lessons, trades, best].filter(x => x.status === 'rejected').map(x => x.reason.message);
+      const B = bots.value || [], L = (lessons.value || []).map(x => ({ key: String(x.key || ''), n: N0(x.n), wins: N0(x.wins), pnl_sol: Number(x.pnl_sol) || 0, last_at: x.last_at })).filter(x => x.n > 0), T = (trades.value || []).slice().sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))), BEST = best.value || [];   // fetched newest-first (API row cap), shown oldest-first
+      const syms = {}; T.forEach(t => { if (t.mint && t.symbol) syms[t.mint] = t.symbol; });
+      $('dbBots').innerHTML = B.length ? B.map(dbBotCard).join('') : '<div class="note">Nog geen bot-status. Die verschijnt een paar minuten nadat je de nieuwe worker.js hebt geüpload' + (errs.some(e => /tabel/.test(e)) ? ' én de nieuwe supabase-setup.sql hebt gedraaid' : '') + '.</div>';
+      // totals from the lessons (these are never deleted)
+      const tot = k => L.find(x => x.key === k);
+      const te = tot('soort:echt'), to = tot('soort:oefen');
+      $('dbTotals').innerHTML = [['Oefen-trades (nep-geld)', to], ['Echte trades', te]].map(([lbl, x]) => '<div class="stat"><div class="k">' + lbl + '</div><div class="v ' + (x && x.pnl_sol >= 0 ? 'up' : x ? 'down' : '') + '">' + (x ? solTxt(x.pnl_sol) : '–') + '</div><div class="s">' + (x ? x.n + ' trades · ' + Math.round(x.wins / x.n * 100) + '% winst' : 'nog geen') + '</div></div>').join('');
+      dbDrawChart(T);
+      // patterns
+      const pats = L.filter(x => x.key.startsWith('patroon:')).sort((a, b) => b.pnl_sol / b.n - a.pnl_sol / a.n);
+      $('dbPatterns').innerHTML = pats.length ? pats.map(x => { const avg = x.pnl_sol / x.n, w = Math.round(x.wins / x.n * 100);
+        return '<tr><td>' + esc(dbKeyName(x.key, syms)) + '</td><td>' + x.n + '</td><td><div class="bar" style="margin:0;width:80px;display:inline-block;vertical-align:middle;"><i style="width:' + w + '%;"></i></div> ' + w + '%</td><td class="' + (avg >= 0 ? 'up' : 'down') + '">' + (avg >= 0 ? '+' : '') + avg.toFixed(4) + '</td></tr>'; }).join('')
+        : '<tr><td colspan="4" class="note">Nog geen patronen geleerd — dat komt met de oefen-trades.</td></tr>';
+      // lessons: what the bot no longer does, and what works
+      const real = L.filter(x => !x.key.startsWith('soort:'));
+      // same rule as the bot (cloudMemory.js): enough trades AND clearly worse than the bot's normal win rate — not just bad luck
+      const allN = (Number(to && to.n) || 0) + (Number(te && te.n) || 0), allW = (Number(to && to.wins) || 0) + (Number(te && te.wins) || 0);
+      const p0 = allN >= 20 ? Math.min(0.8, Math.max(0.2, allW / allN)) : 0.5;
+      const worse = x => { const a = x.wins + 4 * p0, b = (x.n - x.wins) + 4 * (1 - p0), m = a / (a + b); return m + 1.64 * Math.sqrt(m * (1 - m) / (a + b + 1)) < p0; };
+      const bad = real.filter(x => x.n >= (/^(coin|wallet):/.test(x.key) ? 8 : 20) && x.pnl_sol < 0 && x.wins / x.n < 0.4 && worse(x)).sort((a, b) => a.pnl_sol - b.pnl_sol).slice(0, 10);
+      const good = real.filter(x => x.n >= 3 && x.pnl_sol > 0).sort((a, b) => b.pnl_sol - a.pnl_sol).slice(0, 10);
+      const lrow = (x, wins) => '<tr><td>' + esc(dbKeyName(x.key, syms)) + '</td><td>' + (wins ? (Number(x.wins) || 0) : (Number(x.n) || 0) - (Number(x.wins) || 0)) + ' / ' + (Number(x.n) || 0) + '</td><td class="' + (x.pnl_sol >= 0 ? 'up' : 'down') + '">' + solTxt(Number(x.pnl_sol) || 0) + '</td></tr>';
+      $('dbBad').innerHTML = bad.length ? bad.map(x => lrow(x, false)).join('') : '<tr><td colspan="3" class="note">Nog geen fouten die vaak genoeg terugkwamen.</td></tr>';
+      $('dbGood').innerHTML = good.length ? good.map(x => lrow(x, true)).join('') : '<tr><td colspan="3" class="note">Nog niets bewezen.</td></tr>';
+      $('dbBest').innerHTML = BEST.length ? BEST.map(t => '<tr><td>' + esc(t.symbol || '?') + '</td><td>' + esc(t.kind) + '</td><td>' + esc(t.source || '') + '</td><td>' + esc(t.exit || '') + '</td><td class="up">' + solTxt(t.pnl_sol) + '</td><td>' + new Date(t.created_at).toLocaleString('nl-NL', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }) + '</td></tr>').join('')
+        : '<tr><td colspan="6" class="note">Nog geen winst-trades bewaard.</td></tr>';
+      st.textContent = errs.length ? '⚠️ ' + [...new Set(errs)].join(' · ') : 'Bijgewerkt ' + new Date().toLocaleTimeString('nl-NL') + ' · ' + B.length + ' bot(s) · ' + L.length + ' lessen · ' + T.length + ' trades (6 dagen)';
+      st.className = 'note ' + (errs.length ? 'down' : 'ok');
+    } catch (e){ st.textContent = 'Laden mislukt: ' + e.message; st.className = 'note down'; }
+    finally { DB.busy = false; $('dbLoad').disabled = false; }
+  }
+  function setDashMode(on){
+    if (on){ if ($('pickView').style.display !== 'none') setPickMode(false); if ($('predView').style.display !== 'none') setPredMode(false); if ($('walletView').style.display !== 'none') setWalletMode(false); }
+    document.querySelector('.wrap').classList.toggle('dash-mode', on);
+    $('dashView').style.display = on ? '' : 'none';
+    $('dashNavBtn').textContent = on ? '📈 Terug naar terminal' : '📊 Dashboard';
+    if (on && location.hash !== '#dashboard') history.replaceState(null, '', '#dashboard');
+    if (!on && location.hash === '#dashboard') history.replaceState(null, '', location.pathname + location.search);
+    if (!on) setTimeout(loadChartIfTerminal, 0);   // back to the terminal: load the chart we skipped at start
+    if (DB.timer){ clearInterval(DB.timer); DB.timer = null; }
+    // every 5 minutes is plenty (the bots push their status every 3) and keeps the free Supabase data limit far away
+    if (on){ dbLoad(); if ($('dbAuto').checked) DB.timer = setInterval(() => { if (!document.hidden) dbLoad(); }, 300000); }
+    if (!on && chart) setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+  }
+  $('dashNavBtn').addEventListener('click', () => setDashMode($('dashView').style.display === 'none'));
+  $('dbLoad').addEventListener('click', () => { saveSettings(); DB.lessonsAt = ''; DB.lessonsFull = 0; dbLoad(); });
+  ['dbUrl', 'dbKey'].forEach(id => $(id).addEventListener('input', () => { DB.lessonsAt = ''; DB.lessonsFull = 0; DB.lessons = new Map(); }));
+  $('dbAuto').addEventListener('change', () => { saveSettings(); if ($('dashView').style.display !== 'none') setDashMode(true); });
+  setTimeout(() => { if (location.hash === '#dashboard') setDashMode(true); }, 0);
+
   // ---------- events ----------
   $('loadBtn').addEventListener('click', loadLive);
   $('tokenAddr').addEventListener('keydown', e => { if (e.key === 'Enter') loadLive(); });
   $('useManualBtn').addEventListener('click', loadManual);
   $('connectBtn').addEventListener('click', connectWallet);
   $('panicSellBtn').addEventListener('click', async () => {
-    const tokenAddress = extractTokenAddress($('tokenAddr').value);
+    const tokenAddress = chartToken() || extractTokenAddress($('tokenAddr').value);
     if (!walletPubkey){ logTrade('SELL', 'Verbind eerst je wallet.'); return; }
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(tokenAddress || '')){ logTrade('SELL', 'Geen geldig Solana token-adres geladen.'); return; }
     if (tradeBusy){ logTrade('SELL', 'Er loopt al een trade — even wachten.'); return; }
@@ -3526,24 +4127,31 @@
     updateBotBadge();
   });
   updateBotBadge();
+  $('expertTrade').checked = false;
+  $('expertTrade').addEventListener('change', () => {
+    const on = $('expertTrade').checked;
+    if (on && !window.confirm('Weet je het zeker? De website-bot mist de beveiliging van je Railway-bot (RugCheck, lessen, verlieslimiet). Gebruik hem nooit tegelijk met de Railway-bot op dezelfde coin.')){ $('expertTrade').checked = false; return; }
+    $('phantomCard').style.display = on ? '' : 'none';
+    if (!on){ $('autoTradeToggle').checked = false; updateBotBadge(); }
+  });
   $('paperResetBtn').addEventListener('click', resetPaper);
   $('solPriceBtn').addEventListener('click', () => fetchSolPrice(false));
   $('paperStart').addEventListener('change', resetPaper);
   $('paperToggle').addEventListener('change', () => {
     if ($('paperToggle').checked && !(Number($('solUsdPrice').value) > 0)) fetchSolPrice(true);
   });
-  $('autoRefresh').addEventListener('change', () => { prevRefreshValue = null; setupAutoRefresh(); });
+  $('autoRefresh').addEventListener('change', () => setupAutoRefresh());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLive(); });
   $('tfPills').addEventListener('click', e => {
     const b = e.target.closest('.pill'); if (!b) return;
     document.querySelectorAll('.pill').forEach(x => x.classList.remove('active'));
     b.classList.add('active');
     currentTf = b.dataset.tf;
-    if (lastMode === 'live') loadLive();
+    clearTimeout(tfTimer);
+    if (lastMode === 'live') tfTimer = setTimeout(loadLive, 300);
   });
-  ['emaFastLen','emaSlowLen','atrLen','atrMultSL','rrTp1','rrTp2','confirmCandle','confirmWindow',
-   'rsiLen','rsiOS','rsiLookback','revBody','sweepLen','donLen','volMult','trailMult','partialFrac',
-   'costPct','cooldown','beAfterTp1','exitOnCross','useEma','useRev','useBrk'].forEach(id => {
+  let tfTimer = null;
+  STRATEGY_IDS.forEach(id => {
     $(id).addEventListener('change', () => { if (lastMode === 'manual') loadManual(); else if (lastMode === 'live') renderCurrentParamsOnly(); });
   });
   $('exportCsvBtn').addEventListener('click', exportCsv);
@@ -3558,20 +4166,36 @@
     notifOn = perm === 'granted';
     $('notifBtn').textContent = notifOn ? '🔔 Meldingen actief' : '🔕 Geweigerd';
   });
+  try { const th = localStorage.getItem('signaalTerminal.theme'); if (th === 'light' || th === 'dark') document.documentElement.dataset.theme = th; } catch (_){}
+  if ('Notification' in window && Notification.permission === 'granted'){ notifOn = true; $('notifBtn').textContent = '🔔 Meldingen actief'; }
   $('themeBtn').addEventListener('click', () => {
     const root = document.documentElement;
     const isDark = root.dataset.theme ? root.dataset.theme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
     root.dataset.theme = isDark ? 'light' : 'dark';
+    try { localStorage.setItem('signaalTerminal.theme', root.dataset.theme); } catch (_){}
     applyChartTheme();
     if (lastMode) refreshLive_or_rerender();
   });
   function refreshLive_or_rerender(){ /* recolor markers/lines on next tick */ setTimeout(() => { if (lastMode === 'manual') loadManual(); else refreshLive(); }, 50); }
 
+  setupRadarAuto();
   initChart();
+  loadSolMarket();
   renderMarket();
-  resetPaper();
+  if (!restorePaper()) resetPaper();
   fetchSolPrice(true);
-  if ($('tokenAddr').value.trim()) loadLive();
+  // open the coin and timeframe you had last time (not on the Kansen/Coins/Wallets pages: they don't need a chart first)
+  if (!$('tokenAddr').value.trim()){
+    try {
+      const last = JSON.parse(localStorage.getItem('signaalTerminal.last') || 'null');
+      if (last && /^[1-9A-HJ-NP-Za-km-z]{32,44}$|^0x[0-9a-fA-F]{40}$/.test(last.token || '')){
+        $('tokenAddr').value = last.token;
+        const pill = document.querySelector('.pill[data-tf="' + last.tf + '"]');
+        if (pill){ document.querySelectorAll('.pill').forEach(x => x.classList.remove('active')); pill.classList.add('active'); currentTf = last.tf; }
+      }
+    } catch (_){}
+  }
+  if ($('tokenAddr').value.trim() && !/^#(dashboard|kansen|coins|wallets)/.test(location.hash)) loadLive();
   else setStatus('Plak een token-adres of link en klik op Laad.');
 })();
 </script>
