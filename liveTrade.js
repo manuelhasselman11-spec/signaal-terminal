@@ -271,14 +271,17 @@ async function doBuy(mint, s, info, forceDry){
   const buySol = Math.round(env('TRADE_AMOUNT_SOL', 0.01) * mult * 1e6) / 1e6;
   const reserve = env('MIN_SOL_RESERVE', 0.01);
   const bal = await solBalance(owner);
-  if (bal < buySol + reserve) return say('LIVE BUY overgeslagen: SOL-saldo ' + bal.toFixed(4) + ' < ' + (buySol + reserve).toFixed(4) + ' (inzet + reserve)');
+  const lowBal = bal < buySol + reserve;
+  // dry run with too little SOL: still test quote, checks and the swap itself — the simulation then reports the shortage
+  if (lowBal && !dry) return say('LIVE BUY overgeslagen: SOL-saldo ' + bal.toFixed(4) + ' < ' + (buySol + reserve).toFixed(4) + ' (inzet + reserve)');
   const lamports = Math.floor(buySol * 1e9);
   const q = await quote(SOL_MINT, mint, lamports);
   const problems = await safetyProblems(mint, q, lamports, info);
   if (problems.length) return say((dry ? '🧪 DRY RUN: ' : '') + 'LIVE BUY geweigerd door veiligheidscheck (' + mint.slice(0, 6) + '): ' + problems.join(' · '));
   if (dry){
     const sim = await simulateSwap(q, owner);
-    const msg = '🧪 DRY RUN BUY ' + (info && info.symbol || mint.slice(0, 6)) + ' · ' + buySol + ' SOL → ' + q.outAmount + ' (ruwe tokens) · veiligheidscheck ok · simulatie '
+    const msg = '🧪 DRY RUN BUY ' + (info && info.symbol || mint.slice(0, 6)) + ' · ' + buySol + ' SOL → ' + q.outAmount + ' (ruwe tokens) · Jupiter-quote + route ok · veiligheidscheck ok'
+      + (lowBal ? ' · ⚠️ saldo ' + bal.toFixed(4) + ' SOL is te laag voor deze inzet (nodig ' + (buySol + reserve).toFixed(4) + '), dus de simulatie faalt waarschijnlijk op saldo' : '') + ' · simulatie '
       + (sim.ok ? 'GESLAAGD' + (sim.units ? ' (' + sim.units + ' compute units)' : '') : 'MISLUKT: ' + sim.err + (sim.logs.length ? ' · ' + sim.logs.join(' | ').slice(0, 300) : '')) + ' · er is NIETS verstuurd';
     await say(msg);
     return sim;
