@@ -33,7 +33,7 @@ const live = require('./liveTrade');
 const { patternsAt, patternScore, marketFilterFrom, PATTERN_NAMES, PATTERN_BAD } = require('./patterns');
 const { createCopy } = require('./copyTrade');
 const { createCloud } = require('./cloudMemory');
-const { createScout } = require('./paperScout');
+const { createScout, GROUPS } = require('./paperScout');
 const cloud = createCloud();
 const buyMeta = new Map();   // mint -> { kind, source, liq, buyTime }: what we knew when buying, for the cloud memory
 const TOKEN_LIST = (process.env.TOKEN_ADDRESS || '')
@@ -318,17 +318,19 @@ function runEngine(bars, p) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 // fetch with timeout; on 429 (too many requests) or a network error: wait and try again
 const gtCalls = [];
-async function gtThrottle(){
+async function gtThrottle(low){
   for (;;){
     const now = Date.now();
     while (gtCalls.length && now - gtCalls[0] > 60000) gtCalls.shift();
-    if (gtCalls.length < num('GT_PER_MIN', 9)) { gtCalls.push(now); return; }
+    // practice/candidate calls (low) leave GT_RESERVE calls per minute free for the coins you really trade
+    const limit = num('GT_PER_MIN', 9) - (low ? Math.max(0, num('GT_RESERVE', 3)) : 0);
+    if (gtCalls.length < Math.max(1, limit)) { gtCalls.push(now); return; }
     await sleep(Math.min(5000, 60000 - (now - gtCalls[0]) + 50));
   }
 }
-async function fetchJson(url, ms = 12000, tries = 3){
+async function fetchJson(url, ms = 12000, tries = 3, low = false){
   for (let attempt = 0; ; attempt++){
-    if (url.includes('geckoterminal.com')) await gtThrottle();
+    if (url.includes('geckoterminal.com')) await gtThrottle(low);
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), ms);
     try {
@@ -362,16 +364,23 @@ async function fetchBestPair(tokenAddress) {
   return { pair: best, poolAddress: best.pairAddress, network: chainMap[best.chainId] || best.chainId };
 }
 
-async function fetchOHLCV(network, poolAddress, unit, aggregate, tokenAddress) {
+async function fetchOHLCV(network, poolAddress, unit, aggregate, tokenAddress, low) {
   // token=<address>: candles are always the price of OUR coin, also in pools where it is the quote token
   const url = 'https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + poolAddress + '/ohlcv/' + unit + '?aggregate=' + aggregate + '&limit=300'
     + (tokenAddress ? '&token=' + encodeURIComponent(tokenAddress) : '');
-  const json = await fetchJson(url);
+  const json = await fetchJson(url, 12000, 3, !!low);
   const list = (json.data && json.data.attributes && json.data.attributes.ohlcv_list) || [];
-  const bars = list.map(r => ({ time: Number(r[0]), open: Number(r[1]), high: Number(r[2]), low: Number(r[3]), close: Number(r[4]), volume: Number(r[5]) }))
-    .filter(b => b.close > 0);
-  bars.sort((a, b) => a.time - b.time);
-  return bars;
+  return cleanBars(list.map(r => ({ time: r[0], open: r[1], high: r[2], low: r[3], close: r[4], volume: r[5] })));
+}
+// same as the website: drop broken candles (missing/zero prices) and duplicate times — a missing low would look like a stop-loss hit
+function cleanBars(raw){
+  const m = new Map();
+  raw.forEach(b => {
+    const t = Number(b.time), o = Number(b.open), h = Number(b.high), l = Number(b.low), c = Number(b.close);
+    if (!(t > 0) || !(o > 0) || !(h > 0) || !(l > 0) || !(c > 0)) return;
+    m.set(t, { time: t, open: o, high: Math.max(h, o, c), low: Math.min(l, o, c), close: c, volume: Math.max(0, Number(b.volume) || 0) });
+  });
+  return [...m.values()].sort((a, b) => a.time - b.time);
 }
 
 function fmtPrice(n) {
@@ -569,7 +578,7 @@ async function tickOne(token) {
       todo = todo.filter(e => e.type !== 'BUY');
     }
     if (todo.some(e => e.type === 'BUY') && !(await ksAllowBuy(token, tag))) todo = todo.filter(e => e.type !== 'BUY');
-    if (todo.some(e => e.type === 'BUY') && !readyForReal(tag)) todo = todo.filter(e => e.type !== 'BUY');
+    if (todo.some(e => e.type === 'BUY') && !readyForReal(tag, infoOf(c, token).liquidityUsd)) todo = todo.filter(e => e.type !== 'BUY');
     const buyEv = todo.find(e => e.type === 'BUY');
     if (buyEv && !live.isOpen(token)){
       const meta = { kind: 'strategie', source: buyEv.src || 'EMA', liq: infoOf(c, token).liquidityUsd, buyTime: Date.now(), patterns: buyEv.pats || [] };
@@ -678,12 +687,12 @@ function growth(trades){
   trades.forEach(t => { e *= 1 + t.ret; peak = Math.max(peak, e); dd = Math.min(dd, e / peak - 1); if (t.ret > 0) win += t.ret; else loss -= t.ret; });
   return { e, dd, n: trades.length, pf: loss > 0 ? win / loss : (win > 0 ? Infinity : 0) };
 }
-async function fetchHistory(network, poolAddress, unit, aggregate, fromSec, tokenAddress){
+async function fetchHistory(network, poolAddress, unit, aggregate, fromSec, tokenAddress, low){
   const all = new Map(); let before = null;
   for (let page = 0; page < 12; page++){
     const url = 'https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + poolAddress + '/ohlcv/' + unit + '?aggregate=' + aggregate
       + '&limit=1000' + (before ? '&before_timestamp=' + before : '') + (tokenAddress ? '&token=' + encodeURIComponent(tokenAddress) : '');
-    const json = await fetchJson(url, 15000);
+    const json = await fetchJson(url, 15000, 3, !!low);
     const list = (json.data && json.data.attributes && json.data.attributes.ohlcv_list) || [];
     if (!list.length) break;
     let oldest = Infinity;
@@ -692,15 +701,16 @@ async function fetchHistory(network, poolAddress, unit, aggregate, fromSec, toke
     before = oldest;
     await sleep(num('TUNE_PAGE_PAUSE_MS', 7000));   // stay well under the free ~10 calls/min
   }
-  return [...all.values()].sort((a, b) => a.time - b.time);
+  return cleanBars([...all.values()]);
 }
+// 24 sensible settings (signal kind × exit style × bigger-timeframe filter) instead of 11.520 combinations:
+// with thousands of tries something ALWAYS looks good by luck on a few weeks of one coin. Same list as the website optimizer.
+const TUNE_SETS = [{ useEma: true, useRev: false, useBrk: false }, { useEma: false, useRev: true, useBrk: false }, { useEma: false, useRev: false, useBrk: true }, { useEma: true, useRev: true, useBrk: true }];
+const TUNE_EXITS = [{ atrMultSL: 1.0, rrTp1: 1.0, rrTp2: 2 }, { atrMultSL: 1.5, rrTp1: 1.5, rrTp2: 3 }, { atrMultSL: 2.0, rrTp1: 1.5, rrTp2: 5 }];
 function tuneGrid(base){
-  const sets = [{ useEma: true, useRev: false, useBrk: false }, { useEma: false, useRev: true, useBrk: false }, { useEma: false, useRev: false, useBrk: true },
-    { useEma: true, useRev: false, useBrk: true }, { useEma: true, useRev: true, useBrk: true }];
   const out = [];
-  for (const f of [3, 5, 8, 12]) for (const sl of [13, 21, 34, 55]) if (f < sl)
-    for (const a of [0.8, 1.0, 1.5, 2.0]) for (const t1 of [0.8, 1.0, 1.5]) for (const t2 of [2, 3, 5]) for (const flags of sets) for (const tr of [true, false]) for (const hf of [false, true])
-      out.push(Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr, useHtf: hf }));
+  for (const flags of TUNE_SETS) for (const ex of TUNE_EXITS) for (const hf of [false, true])
+    out.push(Object.assign({}, base, flags, ex, { useTrend: true, useHtf: hf }));
   return out;
 }
 // score for the learn part: profit with a drawdown penalty; for losing settings a deeper drawdown makes the score worse, not better
@@ -736,9 +746,9 @@ async function evaluateCoin(token){
     if (i % 40 === 0) await new Promise(r2 => setImmediate(r2));   // keep the bot (stop-watch, ticks) responsive
   }
   results.sort((a, b) => b.rank - a.rank);
-  // stage 2: on the 30 best, also try "let profits run" and "re-enter in the trend"
+  // stage 2: on the 10 best, also try "let profits run", "re-enter", other max-loss and filters
   const extra = [];
-  for (const r of results.slice(0, 30)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }, { maxLossPct: 0, quickBars: 0 }, { maxLossPct: 3, lossMode: 'skip' }, { maxLossPct: 8, lossMode: 'skip' }, { quickBars: 3 }, { usePatterns: false }, { minEr: 0.3 }]){
+  for (const r of results.slice(0, 10)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }, { maxLossPct: 0, quickBars: 0 }, { maxLossPct: 3, lossMode: 'skip' }, { maxLossPct: 8, lossMode: 'skip' }, { quickBars: 3 }, { usePatterns: false }, { minEr: 0.3 }]){
     const r2 = evalP(Object.assign({}, r.p, v));
     if (r2.train.n >= 8) extra.push(Object.assign(r2, { rank: rankOf(r2.train) }));
   }
@@ -760,7 +770,9 @@ function chooseTuned(results, cur){
   const enough = r => r.test.n >= TUNE_MIN && r.val.n + r.test.n >= TUNE_MIN * 2.5;
   const better = !!best && enough(best) && best.test.e > 1.005 && best.val.e * best.test.e > 1.015 && best.test.e >= cur.test.e && best.full.pf >= 1.2 && TUNE_KEYS.some(k => best.p[k] !== cur.p[k]);
   const worksNow = (cur.test.n >= TUNE_MIN && cur.test.e > 1.005) || better;
-  return { best, better, worksNow };
+  // pause a coin only on real evidence that it loses (enough test trades AND a loss) — "too few trades" is no reason to pause
+  const failsNow = !better && cur.test.n >= TUNE_MIN && cur.test.e < 0.995 && !(cur.full.pf >= 1);
+  return { best, better, worksNow, failsNow };
 }
 function applyParams(c, token, p){
   const newP = {}; TUNE_KEYS.forEach(k => { newP[k] = p[k]; });
@@ -771,7 +783,7 @@ async function tuneOne(token){
   const c = coin(token);
   const ev = await evaluateCoin(token);
   if (!ev) return null;
-  const { cur, best, better, worksNow, tag } = ev;
+  const { cur, best, better, worksNow, failsNow, tag } = ev;
   c.tunedAt = Date.now();
   let msg = '🧠 Auto-tune ' + tag + ' (' + TUNE_DAYS + ' dagen, ' + TIMEFRAME + ', leren 60% · kiezen 20% · eerlijke test 20%): nu ' + describe(cur.p) + ' → testdeel ' + pctStr(cur.test.e - 1) + ' (' + cur.test.n + ' trades)';
   if (better){
@@ -782,8 +794,8 @@ async function tuneOne(token){
     } else msg += '\n(alleen voorstel — AUTO_TUNE=suggest)';
   } else msg += '\nGeen duidelijk betere instellingen — blijft zoals het is.';
   if (TUNE_APPLY && PAUSE_BAD){
-    if (!worksNow && !c.paused){ c.paused = true; msg += '\n⏸️ Geen enkele instelling maakt winst in het testdeel: geen nieuwe buys op deze coin tot een volgende tune (verkopen gaan gewoon door).'; }
-    else if (worksNow && c.paused){ c.paused = false; msg += '\n▶️ Pauze opgeheven: de strategie werkt weer op deze coin.'; }
+    if (failsNow && !c.paused){ c.paused = true; msg += '\n⏸️ De strategie verloor op deze coin in het testdeel (' + cur.test.n + ' trades) en niets anders werkte beter: geen nieuwe buys tot een volgende tune (verkopen gaan gewoon door).'; }
+    else if (!failsNow && c.paused){ c.paused = false; msg += '\n▶️ Pauze opgeheven: ' + (worksNow ? 'de strategie werkt weer op deze coin.' : 'er is geen bewijs meer dat hij hier verliest (te weinig trades om te oordelen).'); }
   }
   await notify(msg);
   saveState();
@@ -888,6 +900,7 @@ function stakeMult(){
   return streak >= 2 ? 0.5 : 1;
 }
 live.setJournal(t => {
+  if (t.test){ console.log('test/handmatige verkoop', t.symbol, t.pnlSol.toFixed(5), 'SOL (telt niet mee in het rapport)'); return; }   // /testtrade or /verkoop: no stake halving, no loss limit, no memory
   journal.push(t);
   const meta = buyMeta.get(t.mint) || {};
   buyMeta.delete(t.mint);
@@ -911,7 +924,7 @@ const copy = createCopy({
     isOpen: m => live.isOpen(m),
     canBuy: async (m, wallet, sym) => {
       if (manualStop || activeTokens().includes(m)) return false;
-      if (!readyForReal(sym || m.slice(0, 6))) return false;
+      if (flag('COPY_WAIT_READY', false) && !readyForReal(sym || m.slice(0, 6))) return false;   // copying has its own trust test per wallet
       if (MARKET_FILTER && market.fn && !market.fn(Math.floor(Date.now() / 1000))){ console.log('kopieer: SOL daalt — niet meegekocht'); return false; }
       const pre = await preBuyChecks(m, { kind: 'kopie' });
       if (!pre.ok){ await notify('🛡️ ' + (sym || m.slice(0, 6)) + ': niet meegekocht — ' + pre.why); return false; }
@@ -929,29 +942,38 @@ const STABLE_MINTS = ['So11111111111111111111111111111111111111112', 'EPjFWdd5Au
 // many different coins = much more to learn from: trending (2 pages) + the big memes from AUTO_LIST
 async function scoutCandidates(){
   const mints = [];
-  for (const page of [1, 2]){
+  // enough pages for the number of practice coins: trending pools first, then the pools with the most volume (20 pools per page)
+  const pages = Math.min(10, Math.max(2, Math.ceil(scout.cfg.coins / 30)));
+  const urls = [];
+  for (let page = 1; page <= pages; page++) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?include=base_token&page=' + page);
+  if (scout.cfg.coins > 40) for (let page = 1; page <= pages; page++) urls.push('https://api.geckoterminal.com/api/v2/networks/solana/pools?sort=h24_volume_usd_desc&include=base_token&page=' + page);
+  for (const u of urls){
     try {
-      const json = await fetchJson('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?include=base_token&page=' + page, 12000, 1);
+      const json = await fetchJson(u, 12000, 1, true);
       ((json && json.data) || []).forEach(d => {
         const id = d.relationships && d.relationships.base_token && d.relationships.base_token.data && d.relationships.base_token.data.id;
         const m = id ? id.replace(/^solana_/, '') : null;
         if (m && !STABLE_MINTS.includes(m) && !mints.includes(m)) mints.push(m);
       });
-    } catch (e){ console.error('oefen: trending pagina', page, e.message); }
+    } catch (e){ console.error('oefen: coin-lijst', u.replace(/^.*solana\//, ''), e.message); }
   }
   for (const sym of AUTO_LIST){
     try { const pr = await findBySymbol(sym); if (pr && !mints.includes(pr.baseToken.address)) mints.push(pr.baseToken.address); } catch (_){}
   }
-  const pairs = await dexPairs(mints.slice(0, 60));
+  const pairs = await dexPairs(mints.slice(0, Math.max(60, scout.cfg.coins * 2)));
   return Object.values(pairs).map(pr => ({ mint: pr.baseToken.address, symbol: pr.baseToken.symbol, liq: (pr.liquidity && pr.liquidity.usd) || 0, vol: (pr.volume && pr.volume.h1) || 0 }))
     .sort((a, b) => b.vol - a.vol);
 }
 // LIVE_WAIT_READY=1: no real buys until the practice mode says the strategy is good enough (selling always goes on)
-const LIVE_WAIT_READY = flag('LIVE_WAIT_READY', false);
+// default ON: with live trading on, real strategy/hunter buys only happen in a coin GROUP (by liquidity) that the practice mode
+// proved profitable on its own forward trades — real money never goes where the bot has not shown it can win
+const LIVE_WAIT_READY = flag('LIVE_WAIT_READY', true);
 let readyWarnAt = 0;
-function readyForReal(tag){
-  if (!LIVE_WAIT_READY || !scout.cfg.on || scout.readiness().ready) return true;
-  if (Date.now() - readyWarnAt > 3600000){ readyWarnAt = Date.now(); notify('⏳ ' + tag + ': echte BUY overgeslagen — LIVE_WAIT_READY staat aan en de oefen-modus is nog niet klaar.\n' + scout.readyText()); }
+function readyForReal(tag, liq){
+  if (!LIVE_WAIT_READY || !scout.cfg.on) return true;
+  const r = liq > 0 ? scout.readiness('ok', liq) : scout.readiness();
+  if (r.ready) return true;
+  if (Date.now() - readyWarnAt > 3600000){ readyWarnAt = Date.now(); notify('⏳ ' + tag + ': echte BUY overgeslagen — de oefen-modus heeft ' + (r.group ? 'voor coins met liquiditeit ' + r.group : '') + ' nog niet bewezen dat het winst geeft (' + r.n + ' van ' + r.goal + ' trades' + (r.n ? ', ' + (r.pnl >= 0 ? '+' : '') + r.pnl.toFixed(4) + ' SOL' : '') + '). Zie /oefen. (LIVE_WAIT_READY=0 zet deze bescherming uit.)'); }
   else console.log(tag, 'BUY overgeslagen: wacht op oefen-gereedheid');
   return false;
 }
@@ -963,7 +985,14 @@ const HUNT_MIN_LIQ = num('HUNT_MIN_LIQ', 100000);
 const HUNT_MIN_SCORE = num('HUNT_MIN_SCORE', 1);
 let huntLog = [], huntOpen = [], huntNotifyAt = 0;
 // auto: only once the practice trades the hunter WOULD have taken were good enough (not the looser overall number)
-function huntLiveAllowed(){ return live.liveEnabled() && (HUNT_LIVE === '1' || HUNT_LIVE === 'true' || (HUNT_LIVE === 'auto' && scout.readiness('hunt').ready)); }
+// auto: the hunter buys for real only in a coin group where "buying like the hunter" proved itself in practice
+function huntReadyGroups(){ return GROUPS.filter(g => scout.readiness('hunt', g === '50K-250K' ? 100000 : g === '250K-1M' ? 500000 : 2e6).ready); }
+function huntLiveAllowed(liq){
+  if (!live.liveEnabled()) return false;
+  if (HUNT_LIVE === '1' || HUNT_LIVE === 'true') return true;
+  if (HUNT_LIVE !== 'auto') return false;
+  return liq != null ? scout.readiness('hunt', liq).ready : huntReadyGroups().length > 0;
+}
 /** the hunter's own rules (without the live-only checks RugCheck / buy pressure): used to grade practice trades at the buy */
 async function huntGate(s){
   if (!HUNT || s.liq < HUNT_MIN_LIQ || s.pats.some(x => PATTERN_BAD.includes(x))) return false;
@@ -989,7 +1018,7 @@ async function onHuntSignal(s){
   huntLog.unshift(e); if (huntLog.length > 40) huntLog.length = 40;
   if (!e.ok){ console.log('jager:', s.symbol, 'afgekeurd —', e.why); return; }
   const label = '🎯 ' + s.symbol + ' · ' + s.src + (e.pats.length ? ' · ' + e.pats.join(', ') : '') + ' · score ' + score + (edge != null ? ' · geheugen +' + edge.toFixed(4) + ' SOL/trade' : '');
-  if (!huntLiveAllowed()){
+  if (!huntLiveAllowed(s.liq)){
     e.action = 'alleen gemeld';
     if (Date.now() - huntNotifyAt > 15 * 60000){ huntNotifyAt = Date.now(); notify('Jager vond een kans: ' + label + '\n(nog geen echt geld: ' + (live.liveEnabled() ? (HUNT_LIVE === '0' ? 'HUNT_LIVE=0' : 'wacht tot /oefen "klaar" zegt') : 'live handelen staat uit') + ' · /jager voor alles)'); }
     return;
@@ -998,7 +1027,7 @@ async function onHuntSignal(s){
   if (activeTokens().includes(s.mint)){ e.action = 'coin wordt al gevolgd'; return; }
   huntOpen = huntOpen.filter(m => live.isOpen(m));
   if (huntOpen.length >= HUNT_MAX_OPEN){ e.action = 'al ' + huntOpen.length + ' jager-posities open'; return; }
-  if (!readyForReal(s.symbol)){ e.action = 'wacht op oefen-gereedheid'; return; }
+  if (HUNT_LIVE === 'auto' && !readyForReal(s.symbol, s.liq)){ e.action = 'wacht op oefen-gereedheid (deze coin-groep)'; return; }
   const pre = await preBuyChecks(s.mint, { kind: 'strategie', source: s.src, liq: s.liq, patterns: s.pats });
   if (!pre.ok){ e.action = 'veiligheid: ' + pre.why; await notify('🛡️ Jager koopt ' + s.symbol + ' niet — ' + pre.why); return; }
   const c = coin(s.mint);
@@ -1010,8 +1039,8 @@ async function onHuntSignal(s){
   else { e.action = 'koop niet gelukt'; buyMeta.delete(s.mint); }
 }
 function huntText(){
-  const lines = ['🎯 Jager — ' + (HUNT ? 'aan' : 'uit') + ' · echt geld: ' + (huntLiveAllowed() ? 'JA' : 'nee (' + (!live.liveEnabled() ? 'live handelen uit' : HUNT_LIVE === '0' ? 'HUNT_LIVE=0' : 'wacht op /oefen "klaar"') + ')')
-    + ' · max ' + HUNT_MAX_OPEN + ' tegelijk · kijkt naar ' + Object.keys(scout.state.coins).length + ' coins per candle'];
+  const lines = ['🎯 Jager — ' + (HUNT ? 'aan' : 'uit') + ' · echt geld: ' + (huntLiveAllowed() ? 'JA' : 'nee (' + (!live.liveEnabled() ? 'live handelen uit' : HUNT_LIVE === '0' ? 'HUNT_LIVE=0' : 'wacht tot een coin-groep in /oefen "klaar" is') + ')') + (huntReadyGroups().length ? ' · klaar: ' + huntReadyGroups().join(', ') : '')
+    + ' · max ' + HUNT_MAX_OPEN + ' tegelijk · volgt ' + Object.keys(scout.state.coins).length + ' oefen-coins (± ' + scout.cfg.perRound + ' per ronde)'];
   const open = huntOpen.filter(m => live.isOpen(m));
   if (open.length) lines.push('Open: ' + open.map(m => infoOf(coin(m), m).symbol).join(', '));
   const okN = huntLog.filter(x => x.ok).length;
@@ -1019,8 +1048,13 @@ function huntText(){
   huntLog.slice(0, 10).forEach(x => lines.push((x.ok ? '✅ ' : '✖️ ') + new Date(x.t).toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit' }) + ' ' + x.sym + ' (' + x.src + (x.pats.length ? ' · ' + x.pats.join(', ') : '') + ')' + (x.ok ? (x.action ? ' → ' + x.action : '') : ' — ' + x.why)));
   return lines.join('\n');
 }
+// how many practice coins fit in one round: the free GeckoTerminal budget minus what real trading needs, with some margin
+const SCOUT_PER_ROUND = Math.max(5, Math.floor(Math.max(1, num('GT_PER_MIN', 9) - Math.max(0, num('GT_RESERVE', 3))) * Math.max(5, tfSeconds() / 60) * 0.75));
 const scout = createScout({
-  timeframe: TIMEFRAME, runEngine, getParams: () => Object.assign(getParams(), marketParam()), fetchBestPair, fetchOHLCV, fetchHistory, tradesFromEvents, candidates: scoutCandidates,
+  timeframe: TIMEFRAME, perRound: SCOUT_PER_ROUND, runEngine, getParams: () => Object.assign(getParams(), marketParam()), fetchBestPair,
+  // practice calls are low priority: they never take the GeckoTerminal calls your real coins need
+  fetchOHLCV: (n, p, u, a, t) => fetchOHLCV(n, p, u, a, t, true), fetchHistory: (n, p, u, a, f, t) => fetchHistory(n, p, u, a, f, t, true),
+  tradesFromEvents, candidates: scoutCandidates,
   check: c => cloud.check(c, null, { quiet: true }),
   onSignal: s => onHuntSignal(s),
   huntGate: s => huntGate(s),
@@ -1086,7 +1120,8 @@ function statusData(){
     coins: activeTokens().map(t => { const c = coins.get(t) || {}; return { sym: infoOf(coin(t), t).symbol, mint: t, pos: live.isOpen(t), inTrade: !!(c.engine && c.engine.inPos), paused: !!c.paused, exitOnly: exitOnly(t) }; }),
     oefen: { on: scout.cfg.on, coins: Object.values(st.coins).map(c => c.symbol), seen: st.coinsSeen, all: stat(st.stats), fwd: stat(st.fwd), ok: stat(st.ok), hunt: stat(st.hunt), hist: st.hist,
       huntReady: (() => { const h = scout.readiness('hunt'); return { pct: h.pct, n: h.n, goal: h.goal, ready: h.ready, bad: h.bad, text: scout.huntReadyText() }; })(),
-      ready: { pct: r.pct, n: r.n, goal: r.goal, ready: r.ready, bad: r.bad, text: scout.readyText() } },
+      ready: { pct: r.pct, n: r.n, goal: r.goal, ready: r.ready, bad: r.bad, text: scout.readyText() },
+      groups: GROUPS.map(g => { const x = scout.readiness('ok', g === '50K-250K' ? 100000 : g === '250K-1M' ? 500000 : 2e6); return { g, n: x.n, goal: x.goal, pnl: +x.pnl.toFixed(4), ready: x.ready, bad: x.bad, unsure: x.unsure, pct: x.pct }; }) },
     jager: { on: HUNT, live: huntLiveAllowed(), open: huntOpen.filter(m => live.isOpen(m)).length, log: huntLog.slice(0, 15).map(x => ({ t: x.t, sym: x.sym, src: x.src, pats: x.pats, ok: x.ok, why: x.why, action: x.action })) },
     echt: { n: journal.length, pnl: +totalPnl().toFixed(5), last: journal.slice(-15).reverse().map(t => ({ t: t.time, sym: t.symbol, pnl: +Number(t.pnlSol).toFixed(5), exit: t.exit })) },
     kansen: KANSEN ? ksStats().n : 0, wallets: copy.state.wallets.length,
@@ -1301,6 +1336,32 @@ async function handleCommand(text){
     } catch (e){ await tgSend('🧪 Dry-run fout: ' + e.message); }
     return;
   }
+  if (cmd === '/testtrade'){
+    // ONE tiny real buy + sell, only with "ja": proves real trading works end to end before you let the bot trade for real
+    const parts = rawArg.trim().split(/\s+/).filter(Boolean);
+    const yes = parts.some(x => /^(ja|yes)$/i.test(x));
+    const addr = parts.find(x => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(x)) || 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';   // default: BONK (very liquid)
+    const amt = Number(parts.find(x => /^\d*\.?\d+$/.test(x))) || 0.01;
+    const max = Number(process.env.TEST_TRADE_MAX_SOL) || 0.02;
+    if (!yes) return tgSend('🧪 /testtrade koopt ÉCHT een klein beetje (' + Math.min(amt, max) + ' SOL, max ' + max + ') van ' + (addr.startsWith('DezX') ? 'BONK' : addr.slice(0, 6) + '…') + ' en verkoopt het meteen weer. Kosten: ± 0.001–0.002 SOL. Zo weet je zeker dat kopen én verkopen werken.\nZeker? Stuur: /testtrade ja   (of /testtrade 0.005 ja, of /testtrade <adres> ja)\nNodig: genoeg SOL in de bot-wallet (inzet + 0.01 reserve).');
+    try {
+      const c = coin(addr); if (!c.ctx) c.ctx = await fetchBestPair(addr);
+      await live.testRoundTrip(addr, Object.assign({}, infoOf(c, addr), { stakeMult: 1 }), Math.min(amt, max));
+    } catch (e){ await tgSend('🧪 TEST fout: ' + e.message + ' — controleer met /status of er nog tokens in de wallet staan.'); }
+    return;
+  }
+  if (cmd === '/verkoop'){
+    const mint = rawArg.trim();
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) return tgSend('Gebruik: /verkoop <token-adres> — verkoopt meteen ALLES van dat token uit de bot-wallet (ook als live handelen uit staat).');
+    try { const c = coin(mint); const r = await live.sellNow(mint, infoOf(c, mint)); if (r.ok) await tgSend('✅ Alles van ' + (infoOf(c, mint).symbol || mint.slice(0, 6)) + ' verkocht.'); }
+    catch (e){ await tgSend('Verkopen mislukt: ' + e.message + ' — probeer het over een minuut opnieuw.'); }
+    return;
+  }
+  if (cmd === '/dryrun_verkoop' || cmd === '/dryrunverkoop'){
+    const mint = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rawArg.trim()) ? rawArg.trim() : (activeTokens()[0] || 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263');
+    try { const c = coin(mint); await live.dryRunSell(mint, infoOf(c, mint)); } catch (e){ await tgSend('🧪 Dry-run verkoop fout: ' + e.message); }
+    return;
+  }
   if (cmd === '/opruimen'){
     try { const r = await live.reclaimRent(); return tgSend(r.closed ? '🧹 ' + r.closed + ' lege token-account(s) gesloten · ' + r.sol.toFixed(5) + ' SOL terug in je wallet' : '🧹 Geen lege token-accounts gevonden.'); }
     catch (e){ return tgSend('🧹 Opruimen mislukt: ' + e.message); }
@@ -1336,7 +1397,7 @@ async function handleCommand(text){
   }
   if (cmd === '/start') return tgSend(statusText() + '\n\nStuur /help voor de commando\'s.');
   if (cmd.startsWith('/'))
-    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/oefen — oefen-trades met nep-geld op andere coins\n/jager — welke kansen de jager vond en of hij koopt\n/patronen — welke chart-patronen winst gaven\n/dryrun <coin> — test het echte koop-pad, alleen gesimuleerd\n/opruimen — lege token-accounts sluiten (SOL-huur terug)\n/help — deze lijst');
+    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/oefen — oefen-trades met nep-geld op andere coins\n/jager — welke kansen de jager vond en of hij koopt\n/patronen — welke chart-patronen winst gaven\n/dryrun <coin> — test het echte koop-pad, alleen gesimuleerd\n/dryrun_verkoop <coin> — verkoop simuleren van een token dat je hebt\n/testtrade — één mini-koop + verkoop met echt geld (± 0.002 SOL kosten) om te bewijzen dat alles werkt\n/verkoop <adres> — alles van één token uit de bot-wallet verkopen\n/opruimen — lege token-accounts sluiten (SOL-huur terug)\n/help — deze lijst');
 }
 const MAX_COINS = Math.max(1, Math.floor(num('MAX_COINS', 6)));
 async function coinCommand(cmd, addr){
@@ -1466,7 +1527,7 @@ async function start(){
   // keeps the lessons fresh, and keeps a free Supabase project awake (it pauses after a week without activity)
   if (scout.cfg.on){
     const every = Math.max(5 * 60000, tfSeconds() * 1000);
-    console.log('Oefen-modus AAN:', scout.cfg.coins, 'coins · elke', every / 60000, 'min · nep-inzet', scout.cfg.sol, 'SOL' + (cloud.cfg.on ? ' · naar cloud-geheugen' : ' · (cloud-geheugen uit: alleen tellen)'));
+    console.log('Oefen-modus AAN:', scout.cfg.coins, 'coins (' + scout.cfg.perRound + ' per ronde) · elke', every / 60000, 'min · nep-inzet', scout.cfg.sol, 'SOL' + (cloud.cfg.on ? ' · naar cloud-geheugen' : ' · (cloud-geheugen uit: alleen tellen)'));
     const scoutTick = async () => {
       try { const n = await scout.round(); if (n) { console.log('oefen:', n, 'nieuwe oefen-trade(s)'); const m = scout.milestone(); if (m) await notify(m); saveState(); } }
       catch (e){ console.error('oefen fout', e.message); }
@@ -1523,4 +1584,4 @@ async function start(){
 if (require.main === module) start();
 module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
   pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
-  copy, cloud, scout, buyMeta, chooseTuned, tuneGrid, growth, statusData, preBuyChecks, rugCheck, refreshMarket, get market(){ return market; }, onHuntSignal, huntText, get huntLog(){ return huntLog; }, get huntOpen(){ return huntOpen; }, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
+  copy, cloud, scout, buyMeta, chooseTuned, gtThrottle, gtCalls, SCOUT_PER_ROUND, cleanBars, tuneGrid, growth, statusData, preBuyChecks, rugCheck, refreshMarket, get market(){ return market; }, onHuntSignal, huntText, get huntLog(){ return huntLog; }, get huntOpen(){ return huntOpen; }, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };

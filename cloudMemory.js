@@ -159,7 +159,8 @@ function createCloud(o = {}){
       good: pnl > 0,
     };
     if (t.mint && t.symbol) symbols[t.mint] = t.symbol;
-    const ks = keysFor({ kind: row.kind, mint: row.mint, source: row.source, hour: row.hour, liq: row.liq_usd, patterns: t.patterns, tf: cfg.tf });
+    // history practice trades (mined from coins that were ALREADY trending) are stored but only counted, never used for lessons
+    const ks = t.hist ? ['soort:historie'] : keysFor({ kind: row.kind, mint: row.mint, source: row.source, hour: row.hour, liq: row.liq_usd, patterns: t.patterns, tf: cfg.tf });
     let learned = false;
     const learnLocal = () => { if (learned) return; learned = true; ks.forEach(k => { const l = lessons.get(k) || { n: 0, wins: 0, pnl: 0, last: now() }; l.n++; if (pnl > 0) l.wins++; l.pnl += pnl; l.last = now(); lessons.set(k, l); }); };
     try {
@@ -217,7 +218,7 @@ function createCloud(o = {}){
     const lines = ['☁️ Cloud-geheugen (gedeeld door je bots)'];
     try { await refresh(true); } catch (e){ return '☁️ Cloud-geheugen: ' + e.message; }
     const all = [...lessons.entries()];
-    for (const [k, label] of [['soort:echt', 'echte trades'], ['soort:oefen', 'oefen-trades (nep-geld)']]){
+    for (const [k, label] of [['soort:echt', 'echte trades'], ['soort:oefen', 'oefen-trades (nep-geld, vooruit)'], ['soort:historie', 'historie-oefentrades (alleen geteld, geen lessen)']]){
       const l = lessons.get(k);
       if (l && l.n) lines.push('Geleerd van ' + l.n + ' ' + label + ' · ' + Math.round(l.wins / l.n * 100) + '% winst · ' + (l.pnl >= 0 ? '+' : '') + l.pnl.toFixed(4) + ' SOL');
     }

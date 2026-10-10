@@ -268,7 +268,10 @@ async function doBuy(mint, s, info, forceDry){
   if (-d.pnlSol >= maxLoss) return say('LIVE BUY overgeslagen: dagverlies ' + (-d.pnlSol).toFixed(4) + ' SOL ≥ max ' + maxLoss + ' — morgen weer');
   const owner = loadKeypair();
   const mult = Math.min(1, Math.max(0.25, Number(info && info.stakeMult) || 1));   // never more than the normal amount
-  const buySol = Math.round(env('TRADE_AMOUNT_SOL', 0.01) * mult * 1e6) / 1e6;
+  // /testtrade: a fixed tiny amount (capped in testRoundTrip), never more than TEST_TRADE_MAX_SOL — and never the normal stake
+  if (info && 'testSol' in info && !(info.testSol > 0)) return say('🧪 TEST geweigerd: geen geldig testbedrag.');
+  const isTest = !!(info && info.testSol > 0);
+  const buySol = isTest ? Math.round(info.testSol * 1e6) / 1e6 : Math.round(env('TRADE_AMOUNT_SOL', 0.01) * mult * 1e6) / 1e6;
   const reserve = env('MIN_SOL_RESERVE', 0.01);
   const bal = await solBalance(owner);
   const lowBal = bal < buySol + reserve;
@@ -280,7 +283,7 @@ async function doBuy(mint, s, info, forceDry){
   if (problems.length) return say((dry ? '🧪 DRY RUN: ' : '') + 'LIVE BUY geweigerd door veiligheidscheck (' + mint.slice(0, 6) + '): ' + problems.join(' · '));
   if (dry){
     const sim = await simulateSwap(q, owner);
-    const msg = '🧪 DRY RUN BUY ' + (info && info.symbol || mint.slice(0, 6)) + ' · ' + buySol + ' SOL → ' + q.outAmount + ' (ruwe tokens) · Jupiter-quote + route ok · veiligheidscheck ok'
+    const msg = '🧪 DRY RUN BUY ' + (info && info.symbol || mint.slice(0, 6)) + ' · ' + buySol + ' SOL → ' + q.outAmount + ' (ruwe tokens) · Jupiter-quote + route ok · token-veiligheid ok (geen mint/freeze, liquiditeit, terugverkoop-route)'
       + (lowBal ? ' · ⚠️ saldo ' + bal.toFixed(4) + ' SOL is te laag voor deze inzet (nodig ' + (buySol + reserve).toFixed(4) + '), dus de simulatie faalt waarschijnlijk op saldo' : '') + ' · simulatie '
       + (sim.ok ? 'GESLAAGD' + (sim.units ? ' (' + sim.units + ' compute units)' : '') : 'MISLUKT: ' + sim.err + (sim.logs.length ? ' · ' + sim.logs.join(' | ').slice(0, 300) : '')) + ' · er is NIETS verstuurd';
     await say(msg);
@@ -310,7 +313,7 @@ async function doBuy(mint, s, info, forceDry){
   // slippage: tokens we got versus what the quote promised (+ = worse than expected)
   const got = Number(raw - rawBefore), promised = Number(q.outAmount);
   s.slipBuyPct = promised > 0 && got > 0 ? (1 - got / promised) * 100 : null;
-  s.open = true; s.tp1Done = false; s.tp2Done = false; s.spentSol = spent; s.stakeSol = buySol; d.buys++;
+  s.open = true; s.tp1Done = false; s.tp2Done = false; s.spentSol = spent; s.stakeSol = buySol; if (!isTest) d.buys++;   // a test is not a trading buy
   await say('✅ LIVE BUY ' + buySol + ' SOL (echt van wallet af: ' + spent.toFixed(5) + ')' + (mult < 1 ? ' (verkleind na verliesreeks)' : '') + (retried ? ' (2e poging, slippage ' + (slip / 100) + '%)' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ' + (sig.startsWith('(') ? sig : 'https://solscan.io/tx/' + sig));
 }
 
@@ -351,8 +354,8 @@ async function doSell(mint, s, label, frac, info){
       } catch (e){ console.log('LIVE: leeg token-account sluiten mislukt (' + mint.slice(0, 6) + '): ' + e.message + ' — /opruimen probeert het later'); }
     }
     const pnl = gotSol + rentBack + (s.receivedSol || 0) - s.spentSol;
-    dayStats().pnlSol += pnl;
-    try { journalFn({ mint, symbol: (info && info.symbol) || mint.slice(0, 6), spentSol: s.spentSol, gotSol: gotSol + rentBack + (s.receivedSol || 0), pnlSol: pnl, exit: label, time: Date.now(), sig,
+    if (label !== 'TEST' && label !== 'HANDMATIG') dayStats().pnlSol += pnl;   // tests / manual sells don't count toward the daily loss limit
+    try { journalFn({ test: label === 'TEST' || label === 'HANDMATIG', mint, symbol: (info && info.symbol) || mint.slice(0, 6), spentSol: s.spentSol, gotSol: gotSol + rentBack + (s.receivedSol || 0), pnlSol: pnl, exit: label, time: Date.now(), sig,
       stakeSol: s.stakeSol || s.spentSol, rentBack, slipBuyPct: s.slipBuyPct != null ? +s.slipBuyPct.toFixed(2) : null, slipSellPct: slipSell != null ? +slipSell.toFixed(2) : null }); } catch (_){}
     s.open = false; s.tp1Done = false; s.tp2Done = false; s.receivedSol = 0;
     await say('💰 LIVE ' + label + ' alles verkocht' + (tries > 1 ? ' (poging ' + tries + ')' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ≈ ' + (pnl >= 0 ? '+' : '') + pnl.toFixed(4) + ' SOL · ' + (sig.startsWith('(') ? sig : 'https://solscan.io/tx/' + sig));
@@ -369,6 +372,70 @@ async function doSell(mint, s, label, frac, info){
 async function handleLiveEvents(events, mint, info){
   if (!liveEnabled() || !events || !events.length) return;
   return withWalletLock(() => handleLiveEventsNow(events, mint, info));
+}
+/**
+ * /testtrade: ONE tiny REAL buy and immediately a REAL sell of a liquid coin — proves the whole path works with real money
+ * (quote, safety, sign, send, confirm, sell, close the token account) before the bot ever trades for real. Works with live trading off;
+ * only ever started by your own Telegram command. Refuses if the wallet already holds that token (it would sell YOUR tokens).
+ */
+async function testRoundTrip(mint, info, sol){
+  return withWalletLock(async () => {
+    const sym = (info && info.symbol) || mint.slice(0, 6);
+    if (dryRun()){ await say('🧪 TEST niet uitgevoerd: DRY_RUN=1 staat aan in Railway (dan wordt er nooit echt gehandeld). Zet DRY_RUN=0 voor deze test.'); return { ok: false, step: 'dry' }; }
+    const cap = env('TEST_TRADE_MAX_SOL', 0.02);
+    if (!(cap > 0)){ await say('🧪 TEST staat uit (TEST_TRADE_MAX_SOL is 0).'); return { ok: false, step: 'uit' }; }
+    const amt = Math.min(cap, Math.max(0.002, Number(sol) || 0.01));
+    const owner = loadKeypair();
+    if (isOpen(mint) || (await tokenRawBalance(owner, mint)) > 0n){ await say('🧪 TEST geweigerd: je wallet heeft al ' + sym + ' — de test zou dan ook die tokens verkopen. Kies een andere coin: /testtrade <adres> ja'); return { ok: false, step: 'heeft al' }; }
+    const solStart = await solBalance(owner);
+    const s = { open: false, busy: false, initDone: true, spentSol: 0 };
+    await say('🧪 TEST-TRADE: koop ' + amt + ' SOL ' + sym + ' en verkoop meteen alles weer…');
+    await doBuy(mint, s, Object.assign({}, info, { testSol: amt }), false);
+    if (!s.open){ await say('🧪 TEST gestopt: de koop ging niet door (zie het bericht hierboven). Er is niets verkocht.'); return { ok: false, step: 'koop' }; }
+    await sleep(2000);
+    let simTxt = '';
+    try {   // first simulate the sell (proves the sell route), then really sell
+      const raw = await tokenRawBalance(owner, mint);
+      const sim = await simulateSwap(await quote(mint, SOL_MINT, raw.toString(), env('SLIPPAGE_BPS', 300)), owner);
+      simTxt = 'verkoop-simulatie ' + (sim.ok ? 'GESLAAGD' : 'MISLUKT (' + sim.err + ')');
+    } catch (e){ simTxt = 'verkoop-simulatie fout (' + e.message + ')'; }
+    try { await doSell(mint, s, 'TEST', 1, info); }
+    catch (e){
+      await say('⚠️ TEST: verkopen lukte nog niet (' + e.message + '). Over 30 seconden nog één keer…');
+      await sleep(30000);
+      try { await doSell(mint, s, 'TEST', 1, info); } catch (e2){ await say('⚠️ TEST: verkopen lukte weer niet (' + e2.message + '). Je ' + sym + '-tokens staan nog in de bot-wallet. Verkoop ze met: /verkoop ' + mint); }
+    }
+    const left = await tokenRawBalance(owner, mint);
+    const cost = solStart - (await solBalance(owner));
+    const ok = left === 0n;
+    await say((ok ? '✅ TEST-TRADE GESLAAGD' : '⚠️ TEST-TRADE niet helemaal gelukt') + ': ' + simTxt + ' · ' + (ok ? 'alles verkocht, token-account gesloten (borg terug)' : 'er staan nog ' + sym + '-tokens in de wallet — verkoop ze met /verkoop ' + mint)
+      + ' · totale kosten ' + cost.toFixed(5) + ' SOL = ' + (cost / amt * 100).toFixed(2) + '% van de inzet (koop- + verkoopprijsverschil + netwerk-fees).'
+      + (ok ? ' Kopen én verkopen werken dus echt.' : ''));
+    return { ok, cost, step: 'klaar' };
+  });
+}
+/** /verkoop <mint>: sell EVERYTHING of one token in the bot wallet right now, also with live trading off (only on your own command) */
+async function sellNow(mint, info){
+  return withWalletLock(async () => {
+    const owner = loadKeypair(), sym = (info && info.symbol) || mint.slice(0, 6);
+    if ((await tokenRawBalance(owner, mint)) <= 0n){ await say('Geen ' + sym + ' in de bot-wallet — niets te verkopen.'); return { ok: false }; }
+    const s = state.get(mint) || { open: true, spentSol: 0, receivedSol: 0, busy: false, initDone: true };
+    const known = state.has(mint) && s.spentSol > 0;   // a bot position: keep its real result; otherwise a manual sell without profit bookkeeping
+    await doSell(mint, s, known ? 'VERKOOP' : 'HANDMATIG', 1, info);
+    return { ok: (await tokenRawBalance(owner, mint)) === 0n };
+  });
+}
+/** /dryrun_verkoop: simulate selling a token the wallet holds (nothing is sent) */
+async function dryRunSell(mint, info){
+  return withWalletLock(async () => {
+    const owner = loadKeypair(), sym = (info && info.symbol) || mint.slice(0, 6);
+    const raw = await tokenRawBalance(owner, mint);
+    if (raw <= 0n){ await say('🧪 Geen ' + sym + ' in je wallet, dus niets om te simuleren. Gebruik /testtrade om kopen én verkopen met een klein bedrag echt te testen.'); return { ok: false }; }
+    const q = await quote(mint, SOL_MINT, raw.toString(), env('SLIPPAGE_BPS', 300));
+    const sim = await simulateSwap(q, owner);
+    await say('🧪 DRY RUN VERKOOP ' + sym + ' · alles → ≈ ' + (Number(q.outAmount) / 1e9).toFixed(5) + ' SOL · simulatie ' + (sim.ok ? 'GESLAAGD' : 'MISLUKT: ' + sim.err) + ' · er is NIETS verstuurd');
+    return sim;
+  });
 }
 /** /dryrun: test the whole buy path for one coin with real data — only simulated, never sent, works with live trading off */
 async function dryRunBuy(mint, info){
@@ -412,4 +479,4 @@ async function startupReport(){
     + ' buys/dag · max dagverlies ' + env('MAX_DAILY_LOSS_SOL', 0.05) + ' SOL';
 }
 
-module.exports = { liveEnabled, dryRun, dryRunBuy, reclaimRent, withWalletLock, handleLiveEvents, loadKeypair, isOpen, tp1Taken, positionOpen, setNotify, setJournal, exportState, importState, startupReport, _state: state, _day: day };
+module.exports = { liveEnabled, dryRun, dryRunBuy, dryRunSell, testRoundTrip, sellNow, reclaimRent, withWalletLock, handleLiveEvents, loadKeypair, isOpen, tp1Taken, positionOpen, setNotify, setJournal, exportState, importState, startupReport, _state: state, _day: day };
