@@ -61,6 +61,11 @@ function flag(name, fallback = true) {
   return v === '1' || v.toLowerCase() === 'true';
 }
 
+// network + priority fees of a buy AND a sell, in SOL (Jupiter "high" priority, max 0.0002 per swap) — as % of the stake
+function feePct(){
+  const stake = Math.max(0.001, num('TRADE_AMOUNT_SOL', 0.01));
+  return Math.round(num('FEE_SOL_PER_TRADE', 0.0004) / stake * 1000) / 10;
+}
 function getParams() {
   return {
     emaFastLen: num('EMA_FAST', 5),
@@ -80,7 +85,7 @@ function getParams() {
     volMult: num('VOL_MULT', 1.5),
     trailMult: num('TRAIL_MULT', 2.5),
     partialFrac: Math.min(1, Math.max(0.1, num('PARTIAL_FRAC', 0.5))),
-    costPct: num('COST_PCT', 1),
+    costPct: num('COST_PCT', 1) + feePct(),   // % slippage/fees + the fixed SOL fees per trade, as % of your stake
     cooldown: num('COOLDOWN', 3),   // same default as the website, so the bot trades what you see on the chart
     beAfterTp1: flag('BE_AFTER_TP1', true),
     exitOnCross: flag('EXIT_ON_CROSS', false),
@@ -99,6 +104,7 @@ function getParams() {
     maxLossPct: num('MAX_LOSS_PCT', 2),          // stop never more than 2% under the buy price
     quickBars: num('QUICK_EXIT_BARS', 3),        // after 3 candles still under the buy price → sell (0 = off)
     usePatterns: flag('USE_PATTERNS', true),     // skip buys after a big sprint or in a falling trend
+    slipPct: num('SLIP_PCT', 0.5),               // backtests/practice: buy this % worse and stop-sells this % worse (live fills lag)
     htfLen: 20
   };
 }
@@ -151,6 +157,7 @@ function runEngine(bars, p) {
   const atr = computeATR(H, L, C, p.atrLen), rsi = computeRSI(C, p.rsiLen);
   const hasVol = V.some(v => v > 0);
   const barStep = n > 1 ? bars[n - 1].time - bars[n - 2].time : 0;
+  const slip = Math.max(0, Number(p.slipPct) || 0) / 100;
   // trend filter: only buy above a slow, rising EMA
   const useTrend = p.useTrend !== false && p.trendLen > 1;
   const emaT = useTrend ? computeEMA(C, p.trendLen) : null;
@@ -185,7 +192,7 @@ function runEngine(bars, p) {
 
     if (inPos && i > entryIdx) {
       if (L[i] <= stop) {
-        const px = Math.min(stop, O[i]);
+        const px = Math.min(stop, O[i]) * (1 - slip);   // a stop is a market sell after the fact: a bit worse than the stop price
         gross += size * (px / entry - 1);
         events.push({ time: bars[i].time, type: stop > entry * 1.0001 ? 'TRAIL' : 'SL', price: px });
         finish(i); exitedThisBar = true;
@@ -213,12 +220,12 @@ function runEngine(bars, p) {
           }
           if (p.quickBars > 0 && !tp1Hit && i - entryIdx >= p.quickBars && C[i] < entry) {
             // "snel uit": after N candles still under the buy price → the idea did not work, get out before it gets worse
-            gross += size * (C[i] / entry - 1);
-            events.push({ time: bars[i].time, type: 'EXIT', price: C[i], why: 'snel uit' });
+            gross += size * (C[i] * (1 - slip) / entry - 1);
+            events.push({ time: bars[i].time, type: 'EXIT', price: C[i] * (1 - slip), why: 'snel uit' });
             finish(i); exitedThisBar = true;
           } else if (p.exitOnCross && bearCross) {
-            gross += size * (C[i] / entry - 1);
-            events.push({ time: bars[i].time, type: 'EXIT', price: C[i] });
+            gross += size * (C[i] * (1 - slip) / entry - 1);
+            events.push({ time: bars[i].time, type: 'EXIT', price: C[i] * (1 - slip) });
             finish(i); exitedThisBar = true;
           } else if (tp1Hit && p.trailMult > 0 && atr[i] != null) {
             hh = Math.max(hh, H[i]);
@@ -272,16 +279,18 @@ function runEngine(bars, p) {
       const mktOk = !tags.length || !p.marketOk || p.marketOk(bars[i].time + barStep);
       if (tags.length && trendOk && patOk && mktOk) {
         const swingLow = Math.min(L[i], L[i - 1], L[i - 2]);
-        let stopPx = swingLow - atr[i] * p.atrMultSL;
-        if (p.maxLossPct > 0) stopPx = Math.max(stopPx, C[i] * (1 - p.maxLossPct / 100));   // never more than X% under the buy price
-        const risk = C[i] - stopPx;
+        const structStop = swingLow - atr[i] * p.atrMultSL;
+        // targets come from the chart structure; the max-loss cap only pulls the STOP closer (better risk/reward, same targets)
+        const risk = C[i] - structStop;
+        const stopPx = p.maxLossPct > 0 ? Math.max(structStop, C[i] * (1 - p.maxLossPct / 100)) : structStop;   // never more than X% under the buy price
         // cost filter: the first profit target must be clearly bigger than what the trade costs
         const edgeOk = !(p.minEdge > 0) || (risk * p.rrTp1 / C[i] * 100) >= p.minEdge * p.costPct;
         if (risk > 0 && edgeOk) {
-          inPos = true; entry = C[i]; stop = stopPx;
-          tp1 = entry + risk * p.rrTp1; tp2 = entry + risk * p.rrTp2;
+          // live, the bot buys some seconds after the candle closed: count a little worse price (SLIP_PCT)
+          inPos = true; entry = C[i] * (1 + slip); stop = stopPx;
+          tp1 = C[i] + risk * p.rrTp1; tp2 = C[i] + risk * p.rrTp2;
           tp1Hit = false; tp2Hit = false; gross = 0; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i;
-          events.push({ time: bars[i].time, type: 'BUY', price: C[i], src, pats });
+          events.push({ time: bars[i].time, type: 'BUY', price: entry, src, pats });
         }
       }
     }
@@ -426,6 +435,7 @@ const RUGCHECK = flag('RUGCHECK', true), RUG_STRICT = flag('RUG_STRICT', false);
 const BUY_PRESSURE = flag('BUY_PRESSURE', true), BUY_PRESSURE_RATIO = num('BUY_PRESSURE_RATIO', 1.5);
 const CONF_STAKE = flag('CONF_STAKE', true), STAKE_UNSURE = Math.min(1, Math.max(0.25, num('STAKE_UNSURE', 0.5)));
 const rugCache = new Map();
+let rugWarnAt = 0, rugSeenOk = false;
 async function rugCheck(mint){
   const hit = rugCache.get(mint);
   if (hit && Date.now() - hit.t < 30 * 60000) return hit.r;
@@ -435,8 +445,13 @@ async function rugCheck(mint){
     const risks = (j && Array.isArray(j.risks)) ? j.risks : [];
     const danger = risks.filter(x => /danger/i.test(String(x.level || ''))).map(x => x.name || x.description || 'gevaar');
     const warn = risks.filter(x => /warn/i.test(String(x.level || ''))).map(x => x.name || 'waarschuwing');
+    if (!j || !Array.isArray(j.risks)) throw new Error('onverwacht antwoord (geen risks-lijst)');
     r = { ok: !danger.length, danger, warn, score: j && (j.score_normalised != null ? j.score_normalised : j.score) };
-  } catch (e){ r = { ok: !RUG_STRICT, unknown: true, err: e.message }; }
+    if (!rugSeenOk){ rugSeenOk = true; console.log('RugCheck werkt: ' + mint.slice(0, 6) + ' score', r.score, '· gevaren', danger.length, '· waarschuwingen', warn.length); }
+  } catch (e){
+    r = { ok: !RUG_STRICT, unknown: true, err: e.message };
+    if (Date.now() - rugWarnAt > 6 * 3600000){ rugWarnAt = Date.now(); notify('⚠️ RugCheck werkt nu niet (' + e.message.slice(0, 80) + '). ' + (RUG_STRICT ? 'RUG_STRICT=1: de bot koopt niets tot het weer werkt.' : 'De bot koopt wel door, maar zonder deze rug-check. Zet RUG_STRICT=1 als je dan liever niets koopt.')); }
+  }
   rugCache.set(mint, { t: Date.now(), r });
   return r;
 }
@@ -679,10 +694,12 @@ async function evaluateCoin(token){
   const inPeriod = bars.filter(b => b.time >= start);
   const tag = infoOf(c, token).symbol;
   if (inPeriod.length < 200) { console.log('auto-tune', tag, 'te weinig candles', inPeriod.length); return null; }
-  const split = inPeriod[Math.floor(inPeriod.length * 0.7)].time;
+  // three parts: learn (60%) → choose (20%) → honest test (20%). The test part is never used to pick anything.
+  const split1 = inPeriod[Math.floor(inPeriod.length * 0.6)].time, split2 = inPeriod[Math.floor(inPeriod.length * 0.8)].time;
   const evalP = p => {
-    const tr = tradesFromEvents(runEngine(bars, p).events, p, bars[bars.length - 1].close).filter(t => t.entryTime >= start);
-    return { p, train: growth(tr.filter(t => t.entryTime < split)), test: growth(tr.filter(t => t.entryTime >= split)), full: growth(tr) };
+    const tr = tradesFromEvents(runEngine(bars, p).events, p, bars[bars.length - 1].close).filter(t => t.entryTime >= start && !t.open);
+    return { p, train: growth(tr.filter(t => t.entryTime < split1)), val: growth(tr.filter(t => t.entryTime >= split1 && t.entryTime < split2)),
+      test: growth(tr.filter(t => t.entryTime >= split2)), full: growth(tr) };
   };
   const cur = evalP(paramsFor(c));
   const grid = tuneGrid(paramsFor(c));
@@ -701,13 +718,19 @@ async function evaluateCoin(token){
   }
   results.push(...extra);
   results.sort((a, b) => b.rank - a.rank);
-  // pick from the 10 best on the TRAINING part the one that does best on the TEST part it has not seen
-  const pool = results.slice(0, 10).filter(r => r.test.n >= 3 && r.test.e > 1.01);   // at least +1% after costs on unseen data
-  pool.sort((a, b) => b.test.e - a.test.e);
+  return Object.assign(chooseTuned(results, cur), { cur, tag });
+}
+/**
+ * From the 10 best on the LEARN part, pick the one that does best on the CHOOSE part.
+ * Only adopt it if it ALSO makes money on the TEST part that played no role in the choice (no more "picked on the test").
+ */
+function chooseTuned(results, cur){
+  const pool = results.slice(0, 10).filter(r => r.val.n >= 3 && r.val.e > 1.01);
+  pool.sort((a, b) => b.val.e - a.val.e);
   const best = pool[0] || null;
-  const better = best && best.test.e > cur.test.e + 0.02 && best.full.pf >= 1.1 && TUNE_KEYS.some(k => best.p[k] !== cur.p[k]);
-  const worksNow = (cur.test.n >= 3 && cur.test.e > 1.01) || !!best;
-  return { cur, best, better, worksNow, tag };
+  const better = !!best && best.test.n >= 2 && best.test.e > 1.005 && best.test.e >= cur.test.e && best.full.pf >= 1.1 && TUNE_KEYS.some(k => best.p[k] !== cur.p[k]);
+  const worksNow = (cur.test.n >= 2 && cur.test.e > 1.005) || better;
+  return { best, better, worksNow };
 }
 function applyParams(c, token, p){
   const newP = {}; TUNE_KEYS.forEach(k => { newP[k] = p[k]; });
@@ -720,9 +743,9 @@ async function tuneOne(token){
   if (!ev) return null;
   const { cur, best, better, worksNow, tag } = ev;
   c.tunedAt = Date.now();
-  let msg = '🧠 Auto-tune ' + tag + ' (' + TUNE_DAYS + ' dagen, ' + TIMEFRAME + '): nu ' + describe(cur.p) + ' → testdeel ' + pctStr(cur.test.e - 1) + ' (' + cur.test.n + ' trades)';
+  let msg = '🧠 Auto-tune ' + tag + ' (' + TUNE_DAYS + ' dagen, ' + TIMEFRAME + ', leren 60% · kiezen 20% · eerlijke test 20%): nu ' + describe(cur.p) + ' → testdeel ' + pctStr(cur.test.e - 1) + ' (' + cur.test.n + ' trades)';
   if (better){
-    msg += '\nBeter gevonden: ' + describe(best.p) + ' → testdeel ' + pctStr(best.test.e - 1) + ' (' + best.test.n + ' trades), hele periode ' + pctStr(best.full.e - 1) + ', PF ' + (isFinite(best.full.pf) ? best.full.pf.toFixed(2) : '∞');
+    msg += '\nBeter gevonden: ' + describe(best.p) + ' → kiesdeel ' + pctStr(best.val.e - 1) + ', testdeel ' + pctStr(best.test.e - 1) + ' (' + best.test.n + ' trades), hele periode ' + pctStr(best.full.e - 1) + ', PF ' + (isFinite(best.full.pf) ? best.full.pf.toFixed(2) : '∞');
     if (TUNE_APPLY){
       msg += applyParams(c, token, best.p) === 'pending' ? '\n→ wordt actief zodra de open positie gesloten is.' : '\n→ toegepast.';
       msg += '\nVast bewaren? Zet in Railway: ' + TUNE_KEYS.map(k => ENV_NAME[k] + '=' + (typeof best.p[k] === 'boolean' ? (best.p[k] ? 1 : 0) : best.p[k])).join(' ');
@@ -908,7 +931,17 @@ const HUNT_MAX_OPEN = Math.max(1, Math.floor(num('HUNT_MAX_OPEN', 2)));
 const HUNT_MIN_LIQ = num('HUNT_MIN_LIQ', 100000);
 const HUNT_MIN_SCORE = num('HUNT_MIN_SCORE', 1);
 let huntLog = [], huntOpen = [], huntNotifyAt = 0;
-function huntLiveAllowed(){ return live.liveEnabled() && (HUNT_LIVE === '1' || HUNT_LIVE === 'true' || (HUNT_LIVE === 'auto' && scout.readiness().ready)); }
+// auto: only once the practice trades the hunter WOULD have taken were good enough (not the looser overall number)
+function huntLiveAllowed(){ return live.liveEnabled() && (HUNT_LIVE === '1' || HUNT_LIVE === 'true' || (HUNT_LIVE === 'auto' && scout.readiness('hunt').ready)); }
+/** the hunter's own rules (without the live-only checks RugCheck / buy pressure): used to grade practice trades at the buy */
+async function huntGate(s){
+  if (!HUNT || s.liq < HUNT_MIN_LIQ || s.pats.some(x => PATTERN_BAD.includes(x))) return false;
+  const chk = await cloud.check({ kind: 'strategie', mint: s.mint, source: s.src, liq: s.liq, patterns: s.pats }, null, { quiet: true });
+  if (!chk.ok) return false;
+  const edge = cloud.edge({ kind: 'strategie', mint: s.mint, source: s.src, liq: s.liq, patterns: s.pats });
+  if (edge != null && edge <= 0) return false;
+  return patternScore(s.pats) + (edge != null && edge > 0 ? 1 : 0) >= HUNT_MIN_SCORE;
+}
 async function onHuntSignal(s){
   if (!HUNT) return;
   const why = [];
@@ -959,6 +992,7 @@ const scout = createScout({
   timeframe: TIMEFRAME, runEngine, getParams: () => Object.assign(getParams(), marketParam()), fetchBestPair, fetchOHLCV, fetchHistory, tradesFromEvents, candidates: scoutCandidates,
   check: c => cloud.check(c, null, { quiet: true }),
   onSignal: s => onHuntSignal(s),
+  huntGate: s => huntGate(s),
   isActive: m => activeTokens().includes(m),
   record: t => cloud.record(t, notify).catch(() => false),
 });
@@ -1002,6 +1036,13 @@ function reportText(){
   const tot = totalPnl();
   lines.push('Totaal: ' + (tot >= 0 ? '+' : '') + tot.toFixed(4) + ' SOL' + (MAX_TOTAL_LOSS > 0 ? ' · verlieslimiet ' + MAX_TOTAL_LOSS + ' SOL (nog ' + Math.max(0, MAX_TOTAL_LOSS + (tot - lossBaseline)).toFixed(4) + ' ruimte)' : ''));
   lines.push('Laatste: ' + journal.slice(-5).reverse().map(t => (t.symbol || '?') + ' ' + (t.pnlSol >= 0 ? '+' : '') + t.pnlSol.toFixed(4)).join(' · '));
+  // what trading REALLY costs, measured on your own trades (use this to set COST_PCT)
+  const sb = journal.map(t => t.slipBuyPct).filter(x => x != null), ss = journal.map(t => t.slipSellPct).filter(x => x != null);
+  // network + priority fees per trade (token-account rent that came back is subtracted)
+  const fees = journal.filter(t => t.stakeSol && t.spentSol).map(t => (t.spentSol - t.stakeSol - (t.rentBack || 0)) / t.stakeSol * 100);
+  const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
+  if (sb.length || ss.length) lines.push('Gemeten kosten: slippage kopen gem. ' + (sb.length ? avg(sb).toFixed(2) + '%' : '–') + ' · verkopen gem. ' + (ss.length ? avg(ss).toFixed(2) + '%' : '–')
+    + (fees.length ? ' · netwerk-fees gem. ' + avg(fees).toFixed(2) + '% van de inzet' : '') + ' · ingesteld: ' + getParams().costPct.toFixed(1) + '% per trade');
   return lines.join('\n');
 }
 
@@ -1012,7 +1053,8 @@ function statusData(){
   return {
     v: 1, live: live.liveEnabled(), stopped: manualStop, tf: TIMEFRAME, market: MARKET_FILTER ? (market.state || 'onbekend') : 'uit',
     coins: activeTokens().map(t => { const c = coins.get(t) || {}; return { sym: infoOf(coin(t), t).symbol, mint: t, pos: live.isOpen(t), inTrade: !!(c.engine && c.engine.inPos), paused: !!c.paused, exitOnly: exitOnly(t) }; }),
-    oefen: { on: scout.cfg.on, coins: Object.values(st.coins).map(c => c.symbol), seen: st.coinsSeen, all: stat(st.stats), fwd: stat(st.fwd), ok: stat(st.ok), hist: st.hist,
+    oefen: { on: scout.cfg.on, coins: Object.values(st.coins).map(c => c.symbol), seen: st.coinsSeen, all: stat(st.stats), fwd: stat(st.fwd), ok: stat(st.ok), hunt: stat(st.hunt), hist: st.hist,
+      huntReady: (() => { const h = scout.readiness('hunt'); return { pct: h.pct, n: h.n, goal: h.goal, ready: h.ready, bad: h.bad, text: scout.huntReadyText() }; })(),
       ready: { pct: r.pct, n: r.n, goal: r.goal, ready: r.ready, bad: r.bad, text: scout.readyText() } },
     jager: { on: HUNT, live: huntLiveAllowed(), open: huntOpen.filter(m => live.isOpen(m)).length, log: huntLog.slice(0, 15).map(x => ({ t: x.t, sym: x.sym, src: x.src, pats: x.pats, ok: x.ok, why: x.why, action: x.action })) },
     echt: { n: journal.length, pnl: +totalPnl().toFixed(5), last: journal.slice(-15).reverse().map(t => ({ t: t.time, sym: t.symbol, pnl: +Number(t.pnlSol).toFixed(5), exit: t.exit })) },
@@ -1206,7 +1248,7 @@ async function handleCommand(text){
     const m = rawArg.match(/^(add|del)_([1-9A-HJ-NP-Za-km-z]{32,44})$/);
     if (m){ cmd = m[1] === 'add' ? '/coin' : '/weg'; rawArg = m[2]; }
     else if (/^(volg|ontvolg)_([1-9A-HJ-NP-Za-km-z]{32,44})$/.test(rawArg)){ const v = rawArg.split('_'); cmd = '/' + v[0]; rawArg = v[1]; }
-    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets|geheugen|oefen|jager|patronen)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
+    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets|geheugen|oefen|jager|patronen|opruimen)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
   }
   const arg = rawArg.toUpperCase();
   if (cmd === '/coin' || cmd === '/weg' || cmd === '/coinlijst') return coinCommand(cmd, rawArg.trim());
@@ -1215,6 +1257,22 @@ async function handleCommand(text){
   if (cmd === '/oefen') return tgSend(scout.text());
   if (cmd === '/jager') return tgSend(huntText());
   if (cmd === '/patronen') return tgSend(await cloud.patternsText());
+  if (cmd === '/dryrun'){
+    // test the whole REAL buy path for one coin: quote, safety, RugCheck, buy pressure, swap — only simulated, nothing is sent
+    const mint = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rawArg.trim()) ? rawArg.trim() : (activeTokens()[0] || 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263');
+    await tgSend('🧪 Dry-run voor ' + mint.slice(0, 6) + '… (er wordt niets gekocht)');
+    try {
+      const c = coin(mint); if (!c.ctx) c.ctx = await fetchBestPair(mint);
+      const pre = await preBuyChecks(mint, { kind: 'strategie', source: 'EMA', liq: infoOf(c, mint).liquidityUsd, patterns: [] });
+      await tgSend('🧪 Koop-checks: ' + (pre.ok ? 'OK · ' + pre.notes.join(' · ') : 'GEWEIGERD · ' + pre.why) + (MARKET_FILTER ? ' · SOL-markt ' + (market.state || '?') : ''));
+      await live.dryRunBuy(mint, infoOf(c, mint));
+    } catch (e){ await tgSend('🧪 Dry-run fout: ' + e.message); }
+    return;
+  }
+  if (cmd === '/opruimen'){
+    try { const r = await live.reclaimRent(); return tgSend(r.closed ? '🧹 ' + r.closed + ' lege token-account(s) gesloten · ' + r.sol.toFixed(5) + ' SOL terug in je wallet' : '🧹 Geen lege token-accounts gevonden.'); }
+    catch (e){ return tgSend('🧹 Opruimen mislukt: ' + e.message); }
+  }
   if (cmd === '/status') return tgSend(statusText());
   if (cmd === '/rapport') return tgSend(reportText());
   if (cmd === '/kansen') return tgSend(KANSEN ? ksText() : 'Kansen staat uit (KANSEN=0).');
@@ -1246,7 +1304,7 @@ async function handleCommand(text){
   }
   if (cmd === '/start') return tgSend(statusText() + '\n\nStuur /help voor de commando\'s.');
   if (cmd.startsWith('/'))
-    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/oefen — oefen-trades met nep-geld op andere coins\n/jager — welke kansen de jager vond en of hij koopt\n/patronen — welke chart-patronen winst gaven\n/help — deze lijst');
+    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/oefen — oefen-trades met nep-geld op andere coins\n/jager — welke kansen de jager vond en of hij koopt\n/patronen — welke chart-patronen winst gaven\n/dryrun <coin> — test het echte koop-pad, alleen gesimuleerd\n/opruimen — lege token-accounts sluiten (SOL-huur terug)\n/help — deze lijst');
 }
 const MAX_COINS = Math.max(1, Math.floor(num('MAX_COINS', 6)));
 async function coinCommand(cmd, addr){
@@ -1313,6 +1371,7 @@ async function dailyReport(){
   lastReportDay = n.day;
   saveState();
   const wiped = await cloud.cleanup(notify);
+  if (live.liveEnabled()){ try { const r = await live.reclaimRent(); if (r.closed) notify('🧹 ' + r.closed + ' lege token-account(s) gesloten · ' + r.sol.toFixed(5) + ' SOL terug'); } catch (e){ console.error('opruimen:', e.message); } }
   if (wiped) console.log('cloud-geheugen:', wiped, 'oude verliezende trades gewist (lessen blijven)');
   await tgSend('📊 Dagrapport ' + n.day + '\n' + statusText() + '\n\n' + reportText() + (KANSEN ? '\n\n' + ksText() : '') + (copy.state.wallets.length ? '\n\n' + copy.walletsText() : '') + (scout.cfg.on ? '\n\n' + scout.text() : ''));
 }
@@ -1430,4 +1489,4 @@ async function start(){
 if (require.main === module) start();
 module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
   pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
-  copy, cloud, scout, buyMeta, statusData, preBuyChecks, rugCheck, refreshMarket, get market(){ return market; }, onHuntSignal, huntText, get huntLog(){ return huntLog; }, get huntOpen(){ return huntOpen; }, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
+  copy, cloud, scout, buyMeta, chooseTuned, tuneGrid, growth, statusData, preBuyChecks, rugCheck, refreshMarket, get market(){ return market; }, onHuntSignal, huntText, get huntLog(){ return huntLog; }, get huntOpen(){ return huntOpen; }, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };

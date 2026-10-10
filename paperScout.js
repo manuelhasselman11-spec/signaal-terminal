@@ -27,15 +27,16 @@ function createScout(o){
   const cfg = {
     on: !['0', 'false'].includes(String(env.PAPER_SCOUT || '1').toLowerCase()),
     coins: Math.max(1, Math.min(25, Math.floor(n('PAPER_COINS', 15)))),
-    sol: n('PAPER_SOL', 0.05),
+    sol: n('PAPER_SOL', n('TRADE_AMOUNT_SOL', 0.05)),   // same stake as the real bot, so the fees in % match
     minLiq: n('PAPER_MIN_LIQ', 50000),
     repickH: Math.max(0.5, n('PAPER_REPICK_H', 2)),
     historyDays: Math.max(0, Math.min(14, n('PAPER_HISTORY_DAYS', env.PAPER_HISTORY === '0' ? 0 : 3))),
     goal: Math.max(20, Math.floor(n('PAPER_GOAL', 200))),
+    huntGoal: Math.max(20, Math.floor(n('PAPER_HUNT_GOAL', 100))),   // the hunter is pickier, so fewer trades are needed
     tf: o.timeframe || 'minute:5',
   };
   const now = o.now || (() => Date.now());
-  const fresh = () => ({ coins: {}, done: [], pickedAt: 0, used: {}, stats: emptyStat(), fwd: emptyStat(), ok: emptyStat(), hist: 0, coinsSeen: 0, announced: '' });
+  const fresh = () => ({ coins: {}, done: [], pickedAt: 0, used: {}, stats: emptyStat(), fwd: emptyStat(), ok: emptyStat(), hunt: emptyStat(), hist: 0, coinsSeen: 0, announced: '', announcedHunt: '' });
   let st = fresh();
   // coins[mint] = { symbol, ctx, fwdFrom (sec: trades that start from here are "vooruit"), mined, open, liq, entryOk: {entryTime: bool} }
   // done = "mint:entryTime" already sent to the memory · used[mint] = when the coin was last picked (rotation)
@@ -97,6 +98,9 @@ function createScout(o){
           if (t.open && t.entryTime >= c.fwdFrom && c.entryOk[t.entryTime] == null){
             const buy = res.events.find(e => e.type === 'BUY' && e.time === t.entryTime) || {};
             c.entryOk[t.entryTime] = await allowed(c, mint, buy.src || 'EMA', buy.pats);
+            // would the hunter (the bot that buys with real money) have taken this one? decided now, at the buy
+            c.entryHunt = c.entryHunt || {};
+            c.entryHunt[t.entryTime] = o.huntGate ? !!(await o.huntGate({ mint, liq: c.liq, src: buy.src || 'EMA', pats: buy.pats || [] })) : false;
           }
         }
         for (const t of trades){
@@ -117,6 +121,11 @@ function createScout(o){
             if (ok == null) ok = await allowed(c, mint, buy.src || 'EMA', buy.pats);   // opened and closed between two looks
             if (ok) addStat(st.ok, pnlSol);
             delete c.entryOk[t.entryTime];
+            c.entryHunt = c.entryHunt || {};
+            let hg = c.entryHunt[t.entryTime];
+            if (hg == null && o.huntGate) hg = !!(await o.huntGate({ mint, liq: c.liq, src: buy.src || 'EMA', pats: buy.pats || [] }));
+            if (hg && ok) addStat(st.hunt, pnlSol);
+            delete c.entryHunt[t.entryTime];
           } else st.hist++;
           found++;
           if (o.record) await o.record({ kind: 'papier', mint, symbol: c.symbol, source: buy.src || 'EMA', liq: c.liq, spentSol: cfg.sol, pnlSol, pnlPct: t.ret * 100,
@@ -137,18 +146,26 @@ function createScout(o){
   }
 
   /** Is the strategy (with what the memory learned) good enough for real money? Only forward trades count. */
-  function readiness(){
-    const s = st.ok, pf = s.gl > 0 ? s.gw / s.gl : (s.gw > 0 ? Infinity : 0);
+  // kind 'ok' = everything the lessons allow · 'hunt' = only what the hunter would buy (stricter: pattern, liquidity, edge)
+  function readiness(kind){
+    const s = kind === 'hunt' ? st.hunt : st.ok, goal = kind === 'hunt' ? cfg.huntGoal : cfg.goal;
+    const pf = s.gl > 0 ? s.gw / s.gl : (s.gw > 0 ? Infinity : 0);
     const win = s.n ? s.wins / s.n : 0;
-    const ready = s.n >= cfg.goal && s.pnl > 0 && pf >= 1.2;
-    const bad = s.n >= cfg.goal && !ready;
-    return { n: s.n, goal: cfg.goal, pnl: s.pnl, pf, win, ready, bad, pct: Math.min(100, Math.round(s.n / cfg.goal * 100)) };
+    const ready = s.n >= goal && s.pnl > 0 && pf >= 1.2;
+    const bad = s.n >= goal && !ready;
+    return { n: s.n, goal, pnl: s.pnl, pf, win, ready, bad, pct: Math.min(100, Math.round(s.n / goal * 100)) };
   }
   const fmtS = x => (x >= 0 ? '+' : '') + x.toFixed(4) + ' SOL';
   const line = (label, s) => label + ': ' + s.n + ' trades · ' + (s.n ? Math.round(s.wins / s.n * 100) : 0) + '% winst · ' + fmtS(s.pnl) + (s.gl > 0 ? ' · PF ' + (s.gw / s.gl).toFixed(2) : '');
+  function huntReadyText(){
+    const r = readiness('hunt');
+    return '🎯 Zoals de Jager koopt: ' + (r.ready ? '✅ klaar (' + r.n + ' trades, ' + fmtS(r.pnl) + ', PF ' + (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') + ') — de Jager mag echt kopen'
+      : r.bad ? '❌ niet goed genoeg (' + r.n + ' trades, ' + fmtS(r.pnl) + ') — de Jager koopt niet echt'
+      : r.pct + '% (' + r.n + ' van ' + r.goal + ' trades' + (r.n ? ', ' + fmtS(r.pnl) : '') + ')');
+  }
   function readyText(){
     const r = readiness();
-    if (r.ready) return '✅ KLAAR voor echt geld: ' + r.n + ' vooruit-oefentrades (die door de lessen kwamen) samen ' + fmtS(r.pnl) + ', PF ' + (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') + '. Begin klein: ENABLE_LIVE_TRADES=1 met TRADE_AMOUNT_SOL=0.02.';
+    if (r.ready) return '✅ KLAAR voor echt geld: ' + r.n + ' vooruit-oefentrades (die door de lessen kwamen) samen ' + fmtS(r.pnl) + ', PF ' + (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') + '. Begin met je huidige inzet (TRADE_AMOUNT_SOL) — de kosten in het oefenen zijn daarop berekend.';
     if (r.bad) return '❌ Nog NIET klaar: na ' + r.n + ' vooruit-oefentrades is het resultaat ' + fmtS(r.pnl) + ' (PF ' + (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') + '). De strategie verdient zo niet genoeg na kosten — echt geld zou nu verlies geven. Laat hem verder leren, of probeer andere instellingen (/tune).';
     return '⏳ Gereedheid ' + r.pct + '%: ' + r.n + ' van ' + r.goal + ' vooruit-oefentrades' + (r.n ? ' (tot nu toe ' + fmtS(r.pnl) + ')' : '') + '. Pas daarna zegt de bot eerlijk of echt geld verstandig is.';
   }
@@ -161,19 +178,21 @@ function createScout(o){
       + '\n' + line('Alles', st.stats) + (st.hist ? ' (waarvan ' + st.hist + ' uit de historie)' : '')
       + '\n' + line('Vooruit (vanaf nu)', st.fwd)
       + '\n' + line('Vooruit, met geleerde lessen', st.ok)
+      + '\n' + line('Vooruit, zoals de Jager koopt', st.hunt)
       + '\n' + readyText()
+      + '\n' + huntReadyText()
       + '\nInzet ' + cfg.sol + ' SOL per oefen-trade, kosten zijn er al af. Alles gaat naar het cloud-geheugen (/geheugen).';
   }
   function exportState(){
     return { coins: Object.fromEntries(Object.entries(st.coins).map(([m, c]) => [m, { symbol: c.symbol, fwdFrom: c.fwdFrom, mined: c.mined, open: c.open, liq: c.liq, entryOk: c.entryOk }])),
-      done: st.done.slice(-4000), pickedAt: st.pickedAt, used: st.used, stats: st.stats, fwd: st.fwd, ok: st.ok, hist: st.hist, coinsSeen: st.coinsSeen, announced: st.announced };
+      done: st.done.slice(-4000), pickedAt: st.pickedAt, used: st.used, stats: st.stats, fwd: st.fwd, ok: st.ok, hunt: st.hunt, hist: st.hist, coinsSeen: st.coinsSeen, announced: st.announced, announcedHunt: st.announcedHunt };
   }
   function importState(s){
     if (!s || !s.coins) return;
     st = fresh();
     st.done = Array.isArray(s.done) ? s.done : []; st.pickedAt = Number(s.pickedAt) || 0; st.used = s.used || {};
-    ['stats', 'fwd', 'ok'].forEach(k => { if (s[k]) st[k] = Object.assign(emptyStat(), s[k]); });
-    st.hist = Number(s.hist) || 0; st.announced = s.announced || ''; st.coinsSeen = Number(s.coinsSeen) || Object.keys(s.coins).length;
+    ['stats', 'fwd', 'ok', 'hunt'].forEach(k => { if (s[k]) st[k] = Object.assign(emptyStat(), s[k]); });
+    st.hist = Number(s.hist) || 0; st.announced = s.announced || ''; st.announcedHunt = s.announcedHunt || ''; st.coinsSeen = Number(s.coinsSeen) || Object.keys(s.coins).length;
     // after a restart the bot may have missed candles: forward counting starts again from the next look (no gaps, no peeking)
     Object.entries(s.coins).forEach(([m, c]) => { st.coins[m] = { symbol: c.symbol, ctx: null, fwdFrom: null, mined: true, open: !!c.open, liq: c.liq || 0, entryOk: {} }; });
   }
@@ -181,11 +200,13 @@ function createScout(o){
   function milestone(){
     const r = readiness();
     const tag = r.ready ? 'klaar' : r.bad ? 'niet' : r.pct >= 75 ? '75' : r.pct >= 50 ? '50' : r.pct >= 25 ? '25' : '';
+    const h = readiness('hunt'), htag = h.ready ? 'klaar' : h.bad ? 'niet' : '';
+    if (htag && htag !== st.announcedHunt){ st.announcedHunt = htag; return '🎓 ' + huntReadyText(); }
     if (!tag || tag === st.announced) return null;
     st.announced = tag;
     return '🎓 ' + readyText();
   }
-  return { cfg, round, pick, text, readiness, readyText, milestone, exportState, importState, get state(){ return st; } };
+  return { cfg, round, pick, text, readiness, readyText, huntReadyText, milestone, exportState, importState, get state(){ return st; } };
 }
 
 module.exports = { createScout };

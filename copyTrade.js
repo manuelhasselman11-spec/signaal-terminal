@@ -14,7 +14,7 @@
  * COPY_COST_PCT (2)        geschatte kosten per nep-trade (slippage + fees), wordt van de nep-winst afgetrokken
  * COPY_LIVE_MIN_TRADES (5) live alleen meekopen met wallets die al zoveel nep-trades hebben gedaan met totaal winst (0 = iedereen)
  * COPY_MAX_OPEN (5)        max aantal open kopieer-posities tegelijk
- * COPY_POLL_MS (15000)     hoe vaak kijken
+ * COPY_POLL_MS (60000)     hoe vaak kijken (vaker = meer Helius-tegoed)
  */
 'use strict';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -73,7 +73,8 @@ function createCopy(o = {}){
     slPct: n('COPY_SL_PCT', 25), tpPct: n('COPY_TP_PCT', 0), maxHours: n('COPY_MAX_HOURS', 12),
     costPct: n('COPY_COST_PCT', 2), liveMinTrades: Math.max(0, Math.floor(n('COPY_LIVE_MIN_TRADES', 5))),
     maxOpen: Math.max(1, Math.floor(n('COPY_MAX_OPEN', 5))), maxWallets: Math.max(1, Math.floor(n('COPY_MAX_WALLETS', 10))),
-    pollMs: Math.max(5000, n('COPY_POLL_MS', 15000)), txPause: n('COPY_TX_PAUSE_MS', 150),
+    pollMs: Math.max(5000, n('COPY_POLL_MS', 60000)),   // every minute: ±1.400 RPC calls per wallet per day instead of 5.700
+    txPause: n('COPY_TX_PAUSE_MS', 150),
   };
   if (!['alert', 'paper', 'live'].includes(cfg.mode)) cfg.mode = 'paper';
   const notify = o.notify || (async m => console.log(m));
