@@ -23,14 +23,21 @@ function liqBucket(liq){
   return liq < 50000 ? '<50K' : liq < 250000 ? '50K-250K' : liq < 1000000 ? '250K-1M' : '>1M';
 }
 /** Which patterns does a trade belong to? Each pattern gets its own win/loss counter. */
+// '' for 5-minute candles (the original lessons stay valid), '@15m', '@1u', … for other timeframes
+function tfTag(tf){
+  if (!tf || tf === 'minute:5') return '';
+  const [u, a] = String(tf).split(':');
+  return '@' + a + ({ second: 's', minute: 'm', hour: 'u', day: 'd' }[u] || '');
+}
 function keysFor(c){
-  const k = [];
+  const k = [], tag = tfTag(c.tf);
   if (c.kind !== 'nep-kopie' && c.mint) k.push('coin:' + c.mint);
   if (c.kind === 'strategie' || c.kind === 'papier'){
-    if (c.source) k.push('src:' + c.source);
+    // signal kinds and patterns behave differently on 5m and 15m candles: separate lessons per timeframe
+    if (c.source) k.push('src:' + c.source + tag);
     if (c.hour != null) { const b = Math.floor(c.hour / 4) * 4; k.push('uur:' + b + '-' + (b + 4)); }
     const lb = liqBucket(c.liq); if (lb) k.push('liq:' + lb);
-    (c.patterns || []).forEach(p => k.push('patroon:' + p));   // which chart patterns were there at the buy
+    (c.patterns || []).forEach(p => k.push('patroon:' + p + tag));   // which chart patterns were there at the buy
   } else if (c.source) k.push('wallet:' + c.source);
   if (c.kind) k.push('soort:' + (c.kind === 'papier' || c.kind === 'nep-kopie' ? 'oefen' : 'echt'));   // only for the totals, never blocks
   return k;
@@ -38,6 +45,8 @@ function keysFor(c){
 const GENERAL = key => /^(src|uur|liq|patroon):/.test(key);
 let PATTERN_NAMES = {}; try { PATTERN_NAMES = require('./patterns').PATTERN_NAMES; } catch (_){}
 function describeKey(key, sym){
+  const at = key.lastIndexOf('@');
+  if (at > key.indexOf(':') && /^(src|patroon):/.test(key)) return describeKey(key.slice(0, at), sym) + ' (' + key.slice(at + 1) + '-candles)';
   const [t, v] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
   if (t === 'patroon') return 'patroon "' + (PATTERN_NAMES[v] || v) + '"';
   if (t === 'coin') return 'coin ' + (sym && sym[v] || v.slice(0, 4) + '…' + v.slice(-4));
@@ -61,6 +70,7 @@ function createCloud(o = {}){
     maxWin: n('CLOUD_MAX_WINRATE', 40) / 100,
     lessonDays: n('CLOUD_LESSON_DAYS', 14),
     keepBadDays: Math.max(1, n('CLOUD_KEEP_BAD_DAYS', 7)),
+    tf: o.timeframe || env.TIMEFRAME || 'minute:5',
   };
   const fetchFn = o.fetch || ((...a) => fetch(...a));
   const now = o.now || (() => Date.now());
@@ -112,7 +122,7 @@ function createCloud(o = {}){
   async function check(c, notify, opt){
     if (!cfg.on || !cfg.learn) return { ok: true };
     try { await refresh(false); } catch (e){ fail(e, notify); }
-    for (const k of keysFor(Object.assign({ hour: hourNL(now()) }, c))){
+    for (const k of keysFor(Object.assign({ hour: hourNL(now()), tf: cfg.tf }, c))){
       const l = badLesson(k);
       if (l){
         if (!(opt && opt.quiet)) stats.blocked++;   // practice checks don't count as blocked real buys
@@ -134,7 +144,7 @@ function createCloud(o = {}){
       good: pnl > 0,
     };
     if (t.mint && t.symbol) symbols[t.mint] = t.symbol;
-    const ks = keysFor({ kind: row.kind, mint: row.mint, source: row.source, hour: row.hour, liq: row.liq_usd, patterns: t.patterns });
+    const ks = keysFor({ kind: row.kind, mint: row.mint, source: row.source, hour: row.hour, liq: row.liq_usd, patterns: t.patterns, tf: cfg.tf });
     const learnLocal = () => ks.forEach(k => { const l = lessons.get(k) || { n: 0, wins: 0, pnl: 0, last: now() }; l.n++; if (pnl > 0) l.wins++; l.pnl += pnl; l.last = now(); lessons.set(k, l); });
     try {
       try { await api('trades', { body: row, headers: { Prefer: 'return=minimal' } }); }
@@ -149,7 +159,7 @@ function createCloud(o = {}){
   /** average result per trade (in % of the stake) of setups like this one, from patterns and signal kind; null = not enough data */
   function edge(c){
     let sum = 0, n = 0;
-    for (const k of keysFor(Object.assign({ hour: hourNL(now()) }, c))){
+    for (const k of keysFor(Object.assign({ hour: hourNL(now()), tf: cfg.tf }, c))){
       if (!/^(patroon|src):/.test(k)) continue;
       const l = lessons.get(k);
       if (!l || l.n < cfg.minN * 2 || now() - l.last > cfg.lessonDays * 86400000) continue;
@@ -164,6 +174,12 @@ function createCloud(o = {}){
     const rows = [...lessons.entries()].filter(([k]) => k.startsWith('patroon:')).sort((a, b) => (b[1].pnl / b[1].n) - (a[1].pnl / a[1].n));
     if (!rows.length) return '📐 Nog geen patronen geleerd — dat komt vanzelf met de oefen-trades.';
     return '📐 Welke chart-patronen werkten (alle oefen- en echte trades):\n' + rows.map(([k, l]) => (l.pnl >= 0 ? '✅ ' : '❌ ') + describeKey(k, symbols) + ': ' + l.n + ' trades · ' + Math.round(l.wins / l.n * 100) + '% winst · gem. ' + (l.pnl / l.n >= 0 ? '+' : '') + (l.pnl / l.n).toFixed(4) + ' SOL' + (l.n < cfg.minN * 2 ? ' (nog weinig data)' : '')).join('\n');
+  }
+  /** the bot's own numbers (readiness, practice, hunter …) for the dashboard page — one row per bot */
+  async function pushStatus(data){
+    if (!cfg.on) return false;
+    try { await api('bot_status?on_conflict=bot', { body: { bot: cfg.bot, updated_at: new Date(now()).toISOString(), data }, headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } }); return true; }
+    catch (e){ if (!/bot_status/.test(e.message)) console.error('dashboard-status:', e.message); else console.log('dashboard: tabel bot_status ontbreekt nog — draai de nieuwe supabase-setup.sql'); return false; }
   }
   async function cleanup(notify){
     if (!cfg.on) return 0;
@@ -193,7 +209,7 @@ function createCloud(o = {}){
     return lines.join('\n');
   }
 
-  return { cfg, check, record, refresh, cleanup, text, stats, keysFor, edge, patternsText, get lessons(){ return lessons; } };
+  return { cfg, check, record, refresh, cleanup, text, stats, keysFor, edge, patternsText, pushStatus, get lessons(){ return lessons; } };
 }
 
-module.exports = { createCloud, keysFor, hourNL, liqBucket };
+module.exports = { createCloud, keysFor, hourNL, liqBucket, tfTag };

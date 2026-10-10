@@ -30,7 +30,7 @@
  *            plus de strategie-instellingen (EMA_FAST, EMA_SLOW, ATR_MULT_SL, RR_TP1, RR_TP2, …).
  */
 const live = require('./liveTrade');
-const { patternsAt, patternScore, PATTERN_NAMES, PATTERN_BAD } = require('./patterns');
+const { patternsAt, patternScore, marketFilterFrom, PATTERN_NAMES, PATTERN_BAD } = require('./patterns');
 const { createCopy } = require('./copyTrade');
 const { createCloud } = require('./cloudMemory');
 const { createScout } = require('./paperScout');
@@ -150,6 +150,7 @@ function runEngine(bars, p) {
   const emaF = computeEMA(C, p.emaFastLen), emaS = computeEMA(C, p.emaSlowLen);
   const atr = computeATR(H, L, C, p.atrLen), rsi = computeRSI(C, p.rsiLen);
   const hasVol = V.some(v => v > 0);
+  const barStep = n > 1 ? bars[n - 1].time - bars[n - 2].time : 0;
   // trend filter: only buy above a slow, rising EMA
   const useTrend = p.useTrend !== false && p.trendLen > 1;
   const emaT = useTrend ? computeEMA(C, p.trendLen) : null;
@@ -267,7 +268,9 @@ function runEngine(bars, p) {
       const pats = tags.length ? patternsAt(bars, i) : [];
       // pattern filter: never buy right after a big sprint or in a falling trend
       const patOk = !p.usePatterns || !pats.some(x => PATTERN_BAD.includes(x));
-      if (tags.length && trendOk && patOk) {
+      // market filter: no buys while SOL itself is in a 1-hour downtrend (checked at the moment this candle closes)
+      const mktOk = !tags.length || !p.marketOk || p.marketOk(bars[i].time + barStep);
+      if (tags.length && trendOk && patOk && mktOk) {
         const swingLow = Math.min(L[i], L[i - 1], L[i - 2]);
         let stopPx = swingLow - atr[i] * p.atrMultSL;
         if (p.maxLossPct > 0) stopPx = Math.max(stopPx, C[i] * (1 - p.maxLossPct / 100));   // never more than X% under the buy price
@@ -390,11 +393,84 @@ function coin(token){
   if (!c){ c = { ctx: null, seen: new Set(), first: true, cutoff: null, engine: null, lastSync: 0, lastWatchFire: 0, params: null, pendingParams: null, paused: false, tunedAt: 0 }; coins.set(token, c); }
   return c;
 }
-function paramsFor(c){ return Object.assign(getParams(), (c && c.params) || {}); }
+// ---------- SOL-marktfilter: no buys while SOL itself is in a 1-hour downtrend (memecoins almost always fall with it) ----------
+const MARKET_FILTER = flag('MARKET_FILTER', true);
+const SOL_MINT_ADDR = 'So11111111111111111111111111111111111111112';
+let market = { fn: null, at: 0, ctx: null, state: '', err: '' };
+async function refreshMarket(force){
+  if (!MARKET_FILTER) return;
+  if (!force && Date.now() - market.at < 15 * 60000) return;
+  market.at = Date.now();
+  try {
+    if (!market.ctx) market.ctx = await fetchBestPair(SOL_MINT_ADDR);   // the biggest SOL/USD pool
+    const bars = await fetchHistory(market.ctx.network, market.ctx.poolAddress, 'hour', 1, Math.floor(Date.now() / 1000) - 40 * 86400, SOL_MINT_ADDR);
+    const fn = marketFilterFrom(bars);
+    if (!fn) throw new Error('te weinig SOL-uurcandles');
+    const before = market.state;
+    market.fn = fn; market.err = '';
+    market.state = fn(Math.floor(Date.now() / 1000)) ? 'omhoog' : 'omlaag';
+    if (before && before !== market.state)
+      notify(market.state === 'omlaag' ? '📉 SOL zit nu in een daaltrend (1 uur): de bot koopt even niets nieuws. Verkopen gaan gewoon door.' : '📈 SOL-trend is hersteld: de bot mag weer kopen.');
+  } catch (e){ market.err = e.message; console.error('marktfilter:', e.message, '(zonder filter verder)'); }
+}
+const marketParam = () => (MARKET_FILTER && market.fn ? { marketOk: market.fn } : {});
+function paramsFor(c){ return Object.assign(getParams(), (c && c.params) || {}, marketParam()); }
 function infoOf(c, token){
   const p = c.ctx && c.ctx.pair;
   return { symbol: (p && p.baseToken && p.baseToken.symbol) || token.slice(0, 6), liquidityUsd: p && p.liquidity ? Number(p.liquidity.usd) : NaN, partialFrac: paramsFor(c).partialFrac,
-    stakeMult: typeof stakeMult === 'function' ? stakeMult() : 1 };
+    stakeMult: Math.min(typeof stakeMult === 'function' ? stakeMult() : 1, c.stakeConf || 1) };
+}
+
+// ---------- last checks right before a REAL buy: rug-check, who is buying right now, how sure are we ----------
+const RUGCHECK = flag('RUGCHECK', true), RUG_STRICT = flag('RUG_STRICT', false);
+const BUY_PRESSURE = flag('BUY_PRESSURE', true), BUY_PRESSURE_RATIO = num('BUY_PRESSURE_RATIO', 1.5);
+const CONF_STAKE = flag('CONF_STAKE', true), STAKE_UNSURE = Math.min(1, Math.max(0.25, num('STAKE_UNSURE', 0.5)));
+const rugCache = new Map();
+async function rugCheck(mint){
+  const hit = rugCache.get(mint);
+  if (hit && Date.now() - hit.t < 30 * 60000) return hit.r;
+  let r;
+  try {
+    const j = await fetchJson('https://api.rugcheck.xyz/v1/tokens/' + mint + '/report/summary', 10000, 1);
+    const risks = (j && Array.isArray(j.risks)) ? j.risks : [];
+    const danger = risks.filter(x => /danger/i.test(String(x.level || ''))).map(x => x.name || x.description || 'gevaar');
+    const warn = risks.filter(x => /warn/i.test(String(x.level || ''))).map(x => x.name || 'waarschuwing');
+    r = { ok: !danger.length, danger, warn, score: j && (j.score_normalised != null ? j.score_normalised : j.score) };
+  } catch (e){ r = { ok: !RUG_STRICT, unknown: true, err: e.message }; }
+  rugCache.set(mint, { t: Date.now(), r });
+  return r;
+}
+async function buyPressure(mint){
+  const data = await fetchJson('https://api.dexscreener.com/latest/dex/tokens/' + mint, 8000, 1);
+  const pr = ((data && data.pairs) || []).filter(x => x.baseToken && x.baseToken.address === mint)
+    .sort((a, b) => ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0))[0];
+  const m5 = pr && pr.txns && pr.txns.m5;
+  return m5 ? { buys: Number(m5.buys) || 0, sells: Number(m5.sells) || 0 } : null;
+}
+/** meta: { kind, source, liq, patterns } → { ok, why, stake (0.25–1), notes } */
+async function preBuyChecks(mint, meta){
+  const notes = [];
+  if (RUGCHECK){
+    const r = await rugCheck(mint);
+    if (!r.ok) return { ok: false, why: r.unknown ? 'RugCheck niet bereikbaar (RUG_STRICT=1)' : 'RugCheck gevaar: ' + r.danger.slice(0, 3).join(', ') };
+    if (r.unknown) notes.push('RugCheck niet bereikbaar');
+    else if (r.warn.length) notes.push('RugCheck let op: ' + r.warn.slice(0, 2).join(', '));
+  }
+  if (BUY_PRESSURE){
+    try {
+      const bp = await buyPressure(mint);
+      if (bp && bp.buys + bp.sells >= 8 && bp.sells > bp.buys * BUY_PRESSURE_RATIO)
+        return { ok: false, why: 'nu vooral verkopers (5 min: ' + bp.buys + ' kopers / ' + bp.sells + ' verkopers)' };
+      if (bp) notes.push('5 min: ' + bp.buys + ' kopers / ' + bp.sells + ' verkopers');
+    } catch (e){ notes.push('kopersdruk onbekend'); }
+  }
+  let stake = 1;
+  if (CONF_STAKE && meta && meta.kind !== 'kopie'){
+    const edge = cloud.edge({ kind: 'strategie', mint, source: meta.source, liq: meta.liq, patterns: meta.patterns || [] });
+    if (edge == null || edge <= 0){ stake = STAKE_UNSURE; notes.push(edge == null ? 'nog weinig bewijs → halve inzet' : 'twijfelachtige setup → halve inzet'); }
+    else notes.push('bewezen setup → volle inzet');
+  }
+  return { ok: true, stake, notes };
 }
 
 async function tickOne(token) {
@@ -466,7 +542,11 @@ async function tickOne(token) {
       const meta = { kind: 'strategie', source: buyEv.src || 'EMA', liq: infoOf(c, token).liquidityUsd, buyTime: Date.now(), patterns: buyEv.pats || [] };
       const ok = await cloud.check({ kind: 'strategie', mint: token, source: meta.source, liq: meta.liq, patterns: meta.patterns }, notify);
       if (!ok.ok){ await notify('🧠 ' + tag + ': BUY overgeslagen door het cloud-geheugen — ' + ok.reason + '. (Zo leert de bot van fouten; /geheugen voor alle lessen)'); todo = todo.filter(e => e.type !== 'BUY'); }
-      else buyMeta.set(token, meta);
+      else {
+        const pre = await preBuyChecks(token, meta);
+        if (!pre.ok){ await notify('🛡️ ' + tag + ': BUY overgeslagen — ' + pre.why); todo = todo.filter(e => e.type !== 'BUY'); }
+        else { c.stakeConf = pre.stake; buyMeta.set(token, Object.assign(meta, { stake: pre.stake })); if (pre.notes.length) console.log(tag, 'koop-check:', pre.notes.join(' · ')); }
+      }
     }
     if (todo.length) await live.handleLiveEvents(todo, token, infoOf(c, token));
     await syncOne(token, c);
@@ -778,6 +858,9 @@ const copy = createCopy({
     canBuy: async (m, wallet, sym) => {
       if (manualStop || activeTokens().includes(m)) return false;
       if (!readyForReal(sym || m.slice(0, 6))) return false;
+      if (MARKET_FILTER && market.fn && !market.fn(Math.floor(Date.now() / 1000))){ console.log('kopieer: SOL daalt — niet meegekocht'); return false; }
+      const pre = await preBuyChecks(m, { kind: 'kopie' });
+      if (!pre.ok){ await notify('🛡️ ' + (sym || m.slice(0, 6)) + ': niet meegekocht — ' + pre.why); return false; }
       const ok = await cloud.check({ kind: 'kopie', mint: m, source: wallet }, notify);
       if (!ok.ok){ await notify('🧠 ' + (sym || m.slice(0, 6)) + ': niet meegekocht door het cloud-geheugen — ' + ok.reason); return false; }
       return true;
@@ -852,10 +935,12 @@ async function onHuntSignal(s){
   huntOpen = huntOpen.filter(m => live.isOpen(m));
   if (huntOpen.length >= HUNT_MAX_OPEN){ e.action = 'al ' + huntOpen.length + ' jager-posities open'; return; }
   if (!readyForReal(s.symbol)){ e.action = 'wacht op oefen-gereedheid'; return; }
+  const pre = await preBuyChecks(s.mint, { kind: 'strategie', source: s.src, liq: s.liq, patterns: s.pats });
+  if (!pre.ok){ e.action = 'veiligheid: ' + pre.why; await notify('🛡️ Jager koopt ' + s.symbol + ' niet — ' + pre.why); return; }
   const c = coin(s.mint);
-  c.ctx = s.ctx; c.first = true;   // from now on the normal bot loop manages this coin: stop-loss, TP, snel uit, trailing
+  c.ctx = s.ctx; c.first = true; c.stakeConf = pre.stake;   // from now on the normal bot loop manages this coin: stop-loss, TP, snel uit, trailing
   buyMeta.set(s.mint, { kind: 'strategie', source: s.src, liq: s.liq, buyTime: Date.now(), patterns: s.pats });
-  await notify('Jager koopt: ' + label);
+  await notify('Jager koopt: ' + label + (pre.notes.length ? '\n' + pre.notes.join(' · ') : ''));
   await live.handleLiveEvents([{ type: 'BUY' }], s.mint, infoOf(c, s.mint));
   if (live.isOpen(s.mint)){ huntOpen.push(s.mint); e.action = 'gekocht'; saveState(); }
   else { e.action = 'koop niet gelukt'; buyMeta.delete(s.mint); }
@@ -871,7 +956,7 @@ function huntText(){
   return lines.join('\n');
 }
 const scout = createScout({
-  timeframe: TIMEFRAME, runEngine, getParams, fetchBestPair, fetchOHLCV, fetchHistory, tradesFromEvents, candidates: scoutCandidates,
+  timeframe: TIMEFRAME, runEngine, getParams: () => Object.assign(getParams(), marketParam()), fetchBestPair, fetchOHLCV, fetchHistory, tradesFromEvents, candidates: scoutCandidates,
   check: c => cloud.check(c, null, { quiet: true }),
   onSignal: s => onHuntSignal(s),
   isActive: m => activeTokens().includes(m),
@@ -919,6 +1004,22 @@ function reportText(){
   lines.push('Laatste: ' + journal.slice(-5).reverse().map(t => (t.symbol || '?') + ' ' + (t.pnlSol >= 0 ? '+' : '') + t.pnlSol.toFixed(4)).join(' · '));
   return lines.join('\n');
 }
+
+// ---------- everything the dashboard page shows, as one object (pushed to Supabase every few minutes) ----------
+function statusData(){
+  const r = scout.readiness(), st = scout.state;
+  const stat = x => ({ n: x.n, wins: x.wins, pnl: +x.pnl.toFixed(5), pf: x.gl > 0 ? +(x.gw / x.gl).toFixed(2) : null });
+  return {
+    v: 1, live: live.liveEnabled(), stopped: manualStop, tf: TIMEFRAME, market: MARKET_FILTER ? (market.state || 'onbekend') : 'uit',
+    coins: activeTokens().map(t => { const c = coins.get(t) || {}; return { sym: infoOf(coin(t), t).symbol, mint: t, pos: live.isOpen(t), inTrade: !!(c.engine && c.engine.inPos), paused: !!c.paused, exitOnly: exitOnly(t) }; }),
+    oefen: { on: scout.cfg.on, coins: Object.values(st.coins).map(c => c.symbol), seen: st.coinsSeen, all: stat(st.stats), fwd: stat(st.fwd), ok: stat(st.ok), hist: st.hist,
+      ready: { pct: r.pct, n: r.n, goal: r.goal, ready: r.ready, bad: r.bad, text: scout.readyText() } },
+    jager: { on: HUNT, live: huntLiveAllowed(), open: huntOpen.filter(m => live.isOpen(m)).length, log: huntLog.slice(0, 15).map(x => ({ t: x.t, sym: x.sym, src: x.src, pats: x.pats, ok: x.ok, why: x.why, action: x.action })) },
+    echt: { n: journal.length, pnl: +totalPnl().toFixed(5), last: journal.slice(-15).reverse().map(t => ({ t: t.time, sym: t.symbol, pnl: +Number(t.pnlSol).toFixed(5), exit: t.exit })) },
+    kansen: KANSEN ? ksStats().n : 0, wallets: copy.state.wallets.length,
+  };
+}
+async function pushDashboard(){ try { await cloud.pushStatus(statusData()); } catch (_){} }
 
 // ---------- Kansen: score coins, check the outcome later, learn — 24/7 ----------
 const KANSEN = flag('KANSEN', true);
@@ -1084,6 +1185,7 @@ function statusText(){
   lines.push('Auto-tune: ' + (TUNE_ON ? (TUNE_APPLY ? 'aan' : 'alleen voorstellen') : 'uit') + ' · stop-wachter: ' + (STOPWATCH_MS ? 'aan' : 'uit')
     + (KANSEN ? ' · kansen: ' + ksStats().n + ' uitkomsten' + (ksFilterActive() ? ' (filter AAN)' : ' (leert, filter nog uit)') : ''));
   lines.push(cloud.cfg.on ? '☁️ Cloud-geheugen AAN (' + cloud.cfg.bot + ')' + (cloud.stats.blocked ? ' · ' + cloud.stats.blocked + ' buy(s) tegengehouden' : '') + (cloud.stats.errors ? ' · ⚠️ ' + cloud.stats.errors + ' fout(en)' : '') : '☁️ Cloud-geheugen uit');
+  if (MARKET_FILTER) lines.push(market.state === 'omlaag' ? '📉 SOL-markt: daalt — geen nieuwe buys' : market.state ? '📈 SOL-markt: ' + market.state + ' — kopen mag' : '⏳ SOL-markt: nog niet geladen' + (market.err ? ' (' + market.err.slice(0, 60) + ')' : ''));
   if (HUNT) lines.push('🎯 Jager: ' + (huntLiveAllowed() ? 'koopt echt (max ' + HUNT_MAX_OPEN + ')' : 'meldt alleen') + ' · ' + huntLog.filter(x => x.ok).length + ' goede kansen recent (meer: /jager)');
   if (scout.cfg.on) lines.push('🎓 Oefen-modus: ' + Object.keys(scout.state.coins).length + ' coins · ' + scout.state.stats.n + ' oefen-trades · gereedheid ' + scout.readiness().pct + '% (meer: /oefen)');
   if (copy.state.wallets.length) lines.push('🐋 Wallets volgen: ' + copy.state.wallets.length + ' · stand ' + copy.cfg.mode + ' (meer: /wallets)');
@@ -1264,6 +1366,8 @@ async function start(){
   console.log('Kijkmoment:', SMART_POLL && tfSeconds() > 60 ? 'vlak na elke ' + TIMEFRAME + '-candle (+ tweede blik na 90 s)' : 'elke ' + POLL_MS / 1000 + ' s', '· winst-wachter:', TP_WATCH ? 'aan' : 'uit');
   console.log('Signaal worker start. Tokens=', TOKEN_LIST.length ? TOKEN_LIST.length : '(LEEG)', TOKEN_LIST.map(t => t.slice(0, 6)).join(','), 'tf=', TIMEFRAME, 'poll=', POLL_MS + 'ms', 'stop-wachter=', STOPWATCH_MS ? STOPWATCH_MS + 'ms' : 'uit');
   try { await notify(await live.startupReport()); } catch (e){ console.error('LIVE start-fout:', e.message); }
+  if (cloud.cfg.on){ setTimeout(pushDashboard, 60000); setInterval(pushDashboard, 3 * 60000); }
+  if (MARKET_FILTER){ await refreshMarket(true); console.log('SOL-marktfilter AAN · SOL nu:', market.state || 'onbekend'); setInterval(() => { refreshMarket(false).catch(() => {}); }, 5 * 60000); }
   if (cloud.cfg.on){
     try { await cloud.refresh(true); console.log('Cloud-geheugen AAN:', cloud.lessons.size, 'lessen geladen · bot-naam', cloud.cfg.bot, '· blokkeren:', cloud.cfg.learn ? 'aan' : 'uit'); }
     catch (e){ console.error('cloud-geheugen:', e.message); notify('⚠️ Cloud-geheugen (Supabase) werkt nog niet: ' + e.message.slice(0, 200)); }
@@ -1326,4 +1430,4 @@ async function start(){
 if (require.main === module) start();
 module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
   pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
-  copy, cloud, scout, buyMeta, onHuntSignal, huntText, get huntLog(){ return huntLog; }, get huntOpen(){ return huntOpen; }, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
+  copy, cloud, scout, buyMeta, statusData, preBuyChecks, rugCheck, refreshMarket, get market(){ return market; }, onHuntSignal, huntText, get huntLog(){ return huntLog; }, get huntOpen(){ return huntOpen; }, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };

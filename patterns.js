@@ -76,7 +76,25 @@ function patternsAt(bars, i){
   if (C[i] > e20[i] + 4 * atr[i] || C[i] / C[Math.max(0, i - 6)] - 1 > Math.max(0.25, 10 * atr[i] / C[i])) out.push('te_ver_gestegen');
   return out;
 }
+/**
+ * SOL-marktfilter: memecoins dalen bijna altijd mee als SOL zakt.
+ * Uit SOL-uurcandles maakt dit een functie (tijd in seconden) → true = kopen mag, false = SOL zit in een 1-uurs-daaltrend.
+ * Alleen uren die op dat moment al afgesloten waren tellen (nooit vooruit kijken). Onbekend = kopen mag.
+ */
+function marketFilterFrom(hourBars){
+  if (!hourBars || hourBars.length < 25) return null;
+  const times = hourBars.map(b => b.time), C = hourBars.map(b => b.close), k = 2 / 21, e = [C[0]];
+  for (let i = 1; i < C.length; i++) e.push(C[i] * k + e[i - 1] * (1 - k));
+  const fn = t => {
+    let lo = 0, hi = times.length - 1, j = -1;
+    while (lo <= hi){ const m = (lo + hi) >> 1; if (times[m] + 3600 <= t){ j = m; lo = m + 1; } else hi = m - 1; }
+    if (j < 23) return true;
+    return !(C[j] < e[j] && e[j] < e[j - 3]);
+  };
+  fn.trendAt = t => fn(t) ? 'omhoog / zijwaarts' : 'omlaag';
+  return fn;
+}
 /** simple quality score: good patterns +1, warnings -2 */
 function patternScore(list){ return (list || []).reduce((s, p) => s + (PATTERN_BAD.includes(p) ? -2 : 1), 0); }
 
-if (typeof module !== 'undefined') module.exports = { patternsAt, patternScore, PATTERN_NAMES, PATTERN_BAD };
+if (typeof module !== 'undefined') module.exports = { patternsAt, patternScore, marketFilterFrom, PATTERN_NAMES, PATTERN_BAD };
