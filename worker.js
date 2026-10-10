@@ -30,6 +30,7 @@
  *            plus de strategie-instellingen (EMA_FAST, EMA_SLOW, ATR_MULT_SL, RR_TP1, RR_TP2, …).
  */
 const live = require('./liveTrade');
+const { patternsAt, patternScore, PATTERN_NAMES, PATTERN_BAD } = require('./patterns');
 const { createCopy } = require('./copyTrade');
 const { createCloud } = require('./cloudMemory');
 const { createScout } = require('./paperScout');
@@ -80,7 +81,7 @@ function getParams() {
     trailMult: num('TRAIL_MULT', 2.5),
     partialFrac: Math.min(1, Math.max(0.1, num('PARTIAL_FRAC', 0.5))),
     costPct: num('COST_PCT', 1),
-    cooldown: num('COOLDOWN', 0),
+    cooldown: num('COOLDOWN', 3),   // same default as the website, so the bot trades what you see on the chart
     beAfterTp1: flag('BE_AFTER_TP1', true),
     exitOnCross: flag('EXIT_ON_CROSS', false),
     useEma: flag('USE_EMA', true),
@@ -95,6 +96,9 @@ function getParams() {
     useCont: flag('USE_CONT', false),
     contBars: num('CONT_BARS', 30),
     htfMult: num('HTF_MULT', 4),
+    maxLossPct: num('MAX_LOSS_PCT', 2),          // stop never more than 2% under the buy price
+    quickBars: num('QUICK_EXIT_BARS', 3),        // after 3 candles still under the buy price → sell (0 = off)
+    usePatterns: flag('USE_PATTERNS', true),     // skip buys after a big sprint or in a falling trend
     htfLen: 20
   };
 }
@@ -206,7 +210,12 @@ function runEngine(bars, p) {
             size -= size * rf;
             stop = Math.max(stop, tp1);
           }
-          if (p.exitOnCross && bearCross) {
+          if (p.quickBars > 0 && !tp1Hit && i - entryIdx >= p.quickBars && C[i] < entry) {
+            // "snel uit": after N candles still under the buy price → the idea did not work, get out before it gets worse
+            gross += size * (C[i] / entry - 1);
+            events.push({ time: bars[i].time, type: 'EXIT', price: C[i], why: 'snel uit' });
+            finish(i); exitedThisBar = true;
+          } else if (p.exitOnCross && bearCross) {
             gross += size * (C[i] / entry - 1);
             events.push({ time: bars[i].time, type: 'EXIT', price: C[i] });
             finish(i); exitedThisBar = true;
@@ -255,9 +264,13 @@ function runEngine(bars, p) {
       }
 
       const trendOk = (!useTrend || (C[i] > emaT[i] && emaT[i] > emaT[i - 3])) && htfOkAt(i);
-      if (tags.length && trendOk) {
+      const pats = tags.length ? patternsAt(bars, i) : [];
+      // pattern filter: never buy right after a big sprint or in a falling trend
+      const patOk = !p.usePatterns || !pats.some(x => PATTERN_BAD.includes(x));
+      if (tags.length && trendOk && patOk) {
         const swingLow = Math.min(L[i], L[i - 1], L[i - 2]);
-        const stopPx = swingLow - atr[i] * p.atrMultSL;
+        let stopPx = swingLow - atr[i] * p.atrMultSL;
+        if (p.maxLossPct > 0) stopPx = Math.max(stopPx, C[i] * (1 - p.maxLossPct / 100));   // never more than X% under the buy price
         const risk = C[i] - stopPx;
         // cost filter: the first profit target must be clearly bigger than what the trade costs
         const edgeOk = !(p.minEdge > 0) || (risk * p.rrTp1 / C[i] * 100) >= p.minEdge * p.costPct;
@@ -265,7 +278,7 @@ function runEngine(bars, p) {
           inPos = true; entry = C[i]; stop = stopPx;
           tp1 = entry + risk * p.rrTp1; tp2 = entry + risk * p.rrTp2;
           tp1Hit = false; tp2Hit = false; gross = 0; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i;
-          events.push({ time: bars[i].time, type: 'BUY', price: C[i], src });
+          events.push({ time: bars[i].time, type: 'BUY', price: C[i], src, pats });
         }
       }
     }
@@ -447,10 +460,11 @@ async function tickOne(token) {
       todo = todo.filter(e => e.type !== 'BUY');
     }
     if (todo.some(e => e.type === 'BUY') && !(await ksAllowBuy(token, tag))) todo = todo.filter(e => e.type !== 'BUY');
+    if (todo.some(e => e.type === 'BUY') && !readyForReal(tag)) todo = todo.filter(e => e.type !== 'BUY');
     const buyEv = todo.find(e => e.type === 'BUY');
     if (buyEv && !live.isOpen(token)){
-      const meta = { kind: 'strategie', source: buyEv.src || 'EMA', liq: infoOf(c, token).liquidityUsd, buyTime: Date.now() };
-      const ok = await cloud.check({ kind: 'strategie', mint: token, source: meta.source, liq: meta.liq }, notify);
+      const meta = { kind: 'strategie', source: buyEv.src || 'EMA', liq: infoOf(c, token).liquidityUsd, buyTime: Date.now(), patterns: buyEv.pats || [] };
+      const ok = await cloud.check({ kind: 'strategie', mint: token, source: meta.source, liq: meta.liq, patterns: meta.patterns }, notify);
       if (!ok.ok){ await notify('🧠 ' + tag + ': BUY overgeslagen door het cloud-geheugen — ' + ok.reason + '. (Zo leert de bot van fouten; /geheugen voor alle lessen)'); todo = todo.filter(e => e.type !== 'BUY'); }
       else buyMeta.set(token, meta);
     }
@@ -570,9 +584,9 @@ function tuneGrid(base){
       out.push(Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr, useHtf: hf }));
   return out;
 }
-const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend', 'useHtf', 'letRun', 'useCont'];
-const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND', useHtf: 'USE_HTF', letRun: 'LET_RUN', useCont: 'USE_CONT' };
-function describe(p){ return 'EMA ' + p.emaFastLen + '/' + p.emaSlowLen + ' · SL ' + p.atrMultSL + '×ATR · TP ' + p.rrTp1 + '/' + p.rrTp2 + ' · ' + [p.useEma && 'EMA', p.useRev && 'Dip', p.useBrk && 'Breakout'].filter(Boolean).join('+') + (p.useTrend ? ' · trend' : '') + (p.useHtf ? ' · grote tf' : '') + (p.letRun ? ' · winst laten lopen' : '') + (p.useCont ? ' · herinstap' : ''); }
+const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend', 'useHtf', 'letRun', 'useCont', 'maxLossPct', 'quickBars', 'usePatterns'];
+const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND', useHtf: 'USE_HTF', letRun: 'LET_RUN', useCont: 'USE_CONT', maxLossPct: 'MAX_LOSS_PCT', quickBars: 'QUICK_EXIT_BARS', usePatterns: 'USE_PATTERNS' };
+function describe(p){ return 'EMA ' + p.emaFastLen + '/' + p.emaSlowLen + ' · SL ' + p.atrMultSL + '×ATR · TP ' + p.rrTp1 + '/' + p.rrTp2 + ' · ' + [p.useEma && 'EMA', p.useRev && 'Dip', p.useBrk && 'Breakout'].filter(Boolean).join('+') + (p.useTrend ? ' · trend' : '') + (p.useHtf ? ' · grote tf' : '') + (p.letRun ? ' · winst laten lopen' : '') + (p.useCont ? ' · herinstap' : '') + (p.maxLossPct > 0 ? ' · max ' + p.maxLossPct + '% verlies' : '') + (p.quickBars > 0 ? ' · snel uit na ' + p.quickBars : '') + (p.usePatterns === false ? ' · zonder patroonfilter' : ''); }
 const pctStr = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
 
 async function evaluateCoin(token){
@@ -601,7 +615,7 @@ async function evaluateCoin(token){
   results.sort((a, b) => b.rank - a.rank);
   // stage 2: on the 30 best, also try "let profits run" and "re-enter in the trend"
   const extra = [];
-  for (const r of results.slice(0, 30)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }]){
+  for (const r of results.slice(0, 30)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }, { maxLossPct: 0, quickBars: 0 }, { quickBars: 0 }, { maxLossPct: 3 }, { quickBars: 5 }, { usePatterns: false }]){
     const r2 = evalP(Object.assign({}, r.p, v));
     if (r2.train.n >= 8) extra.push(Object.assign(r2, { rank: Math.log(r2.train.e) / (1 + 3 * Math.abs(r2.train.dd)) }));
   }
@@ -763,6 +777,7 @@ const copy = createCopy({
     isOpen: m => live.isOpen(m),
     canBuy: async (m, wallet, sym) => {
       if (manualStop || activeTokens().includes(m)) return false;
+      if (!readyForReal(sym || m.slice(0, 6))) return false;
       const ok = await cloud.check({ kind: 'kopie', mint: m, source: wallet }, notify);
       if (!ok.ok){ await notify('🧠 ' + (sym || m.slice(0, 6)) + ': niet meegekocht door het cloud-geheugen — ' + ok.reason); return false; }
       return true;
@@ -774,18 +789,91 @@ const copy = createCopy({
 });
 // ---------- oefen-modus: strategy with fake money on coins you don't hold, real charts, results → cloud memory ----------
 const STABLE_MINTS = ['So11111111111111111111111111111111111111112', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'];
+// many different coins = much more to learn from: trending (2 pages) + the big memes from AUTO_LIST
 async function scoutCandidates(){
-  const json = await fetchJson('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?include=base_token&page=1', 12000, 1);
-  const mints = [...new Set(((json && json.data) || []).map(d => {
-    const id = d.relationships && d.relationships.base_token && d.relationships.base_token.data && d.relationships.base_token.data.id;
-    return id ? id.replace(/^solana_/, '') : null;
-  }).filter(m => m && !STABLE_MINTS.includes(m)))];
-  const pairs = await dexPairs(mints.slice(0, 30));
+  const mints = [];
+  for (const page of [1, 2]){
+    try {
+      const json = await fetchJson('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?include=base_token&page=' + page, 12000, 1);
+      ((json && json.data) || []).forEach(d => {
+        const id = d.relationships && d.relationships.base_token && d.relationships.base_token.data && d.relationships.base_token.data.id;
+        const m = id ? id.replace(/^solana_/, '') : null;
+        if (m && !STABLE_MINTS.includes(m) && !mints.includes(m)) mints.push(m);
+      });
+    } catch (e){ console.error('oefen: trending pagina', page, e.message); }
+  }
+  for (const sym of AUTO_LIST){
+    try { const pr = await findBySymbol(sym); if (pr && !mints.includes(pr.baseToken.address)) mints.push(pr.baseToken.address); } catch (_){}
+  }
+  const pairs = await dexPairs(mints.slice(0, 60));
   return Object.values(pairs).map(pr => ({ mint: pr.baseToken.address, symbol: pr.baseToken.symbol, liq: (pr.liquidity && pr.liquidity.usd) || 0, vol: (pr.volume && pr.volume.h1) || 0 }))
     .sort((a, b) => b.vol - a.vol);
 }
+// LIVE_WAIT_READY=1: no real buys until the practice mode says the strategy is good enough (selling always goes on)
+const LIVE_WAIT_READY = flag('LIVE_WAIT_READY', false);
+let readyWarnAt = 0;
+function readyForReal(tag){
+  if (!LIVE_WAIT_READY || !scout.cfg.on || scout.readiness().ready) return true;
+  if (Date.now() - readyWarnAt > 3600000){ readyWarnAt = Date.now(); notify('⏳ ' + tag + ': echte BUY overgeslagen — LIVE_WAIT_READY staat aan en de oefen-modus is nog niet klaar.\n' + scout.readyText()); }
+  else console.log(tag, 'BUY overgeslagen: wacht op oefen-gereedheid');
+  return false;
+}
+// ---------- 🎯 jager: looks at every practice coin after each candle; a fresh BUY with a good pattern and a clean memory may become a real trade ----------
+const HUNT = flag('HUNT', true);
+const HUNT_LIVE = String(process.env.HUNT_LIVE || 'auto').toLowerCase();   // auto = only once /oefen says "klaar" · 1 = always · 0 = only report
+const HUNT_MAX_OPEN = Math.max(1, Math.floor(num('HUNT_MAX_OPEN', 2)));
+const HUNT_MIN_LIQ = num('HUNT_MIN_LIQ', 100000);
+const HUNT_MIN_SCORE = num('HUNT_MIN_SCORE', 1);
+let huntLog = [], huntOpen = [], huntNotifyAt = 0;
+function huntLiveAllowed(){ return live.liveEnabled() && (HUNT_LIVE === '1' || HUNT_LIVE === 'true' || (HUNT_LIVE === 'auto' && scout.readiness().ready)); }
+async function onHuntSignal(s){
+  if (!HUNT) return;
+  const why = [];
+  const good = s.pats.filter(x => !PATTERN_BAD.includes(x)), bad = s.pats.filter(x => PATTERN_BAD.includes(x));
+  if (s.liq < HUNT_MIN_LIQ) why.push('liquiditeit $' + Math.round(s.liq).toLocaleString('nl-NL') + ' te laag');
+  if (bad.length) why.push(bad.map(x => PATTERN_NAMES[x]).join(', '));
+  const chk = await cloud.check({ kind: 'strategie', mint: s.mint, source: s.src, liq: s.liq, patterns: s.pats }, null, { quiet: true });
+  if (!chk.ok) why.push('geheugen: ' + chk.reason);
+  const edge = cloud.edge({ kind: 'strategie', mint: s.mint, source: s.src, liq: s.liq, patterns: s.pats });
+  if (edge != null && edge <= 0) why.push('zulke setups verloren gemiddeld ' + edge.toFixed(4) + ' SOL per trade');
+  const score = patternScore(s.pats) + (edge != null && edge > 0 ? 1 : 0);
+  if (score < HUNT_MIN_SCORE) why.push('geen sterk patroon');
+  const e = { t: Date.now(), mint: s.mint, sym: s.symbol, src: s.src, pats: good.map(x => PATTERN_NAMES[x]), score, ok: !why.length, why: why.join(' · '), action: '' };
+  huntLog.unshift(e); if (huntLog.length > 40) huntLog.length = 40;
+  if (!e.ok){ console.log('jager:', s.symbol, 'afgekeurd —', e.why); return; }
+  const label = '🎯 ' + s.symbol + ' · ' + s.src + (e.pats.length ? ' · ' + e.pats.join(', ') : '') + ' · score ' + score + (edge != null ? ' · geheugen +' + edge.toFixed(4) + ' SOL/trade' : '');
+  if (!huntLiveAllowed()){
+    e.action = 'alleen gemeld';
+    if (Date.now() - huntNotifyAt > 15 * 60000){ huntNotifyAt = Date.now(); notify('Jager vond een kans: ' + label + '\n(nog geen echt geld: ' + (live.liveEnabled() ? (HUNT_LIVE === '0' ? 'HUNT_LIVE=0' : 'wacht tot /oefen "klaar" zegt') : 'live handelen staat uit') + ' · /jager voor alles)'); }
+    return;
+  }
+  if (manualStop){ e.action = 'gestopt (/stop)'; return; }
+  if (activeTokens().includes(s.mint)){ e.action = 'coin wordt al gevolgd'; return; }
+  huntOpen = huntOpen.filter(m => live.isOpen(m));
+  if (huntOpen.length >= HUNT_MAX_OPEN){ e.action = 'al ' + huntOpen.length + ' jager-posities open'; return; }
+  if (!readyForReal(s.symbol)){ e.action = 'wacht op oefen-gereedheid'; return; }
+  const c = coin(s.mint);
+  c.ctx = s.ctx; c.first = true;   // from now on the normal bot loop manages this coin: stop-loss, TP, snel uit, trailing
+  buyMeta.set(s.mint, { kind: 'strategie', source: s.src, liq: s.liq, buyTime: Date.now(), patterns: s.pats });
+  await notify('Jager koopt: ' + label);
+  await live.handleLiveEvents([{ type: 'BUY' }], s.mint, infoOf(c, s.mint));
+  if (live.isOpen(s.mint)){ huntOpen.push(s.mint); e.action = 'gekocht'; saveState(); }
+  else { e.action = 'koop niet gelukt'; buyMeta.delete(s.mint); }
+}
+function huntText(){
+  const lines = ['🎯 Jager — ' + (HUNT ? 'aan' : 'uit') + ' · echt geld: ' + (huntLiveAllowed() ? 'JA' : 'nee (' + (!live.liveEnabled() ? 'live handelen uit' : HUNT_LIVE === '0' ? 'HUNT_LIVE=0' : 'wacht op /oefen "klaar"') + ')')
+    + ' · max ' + HUNT_MAX_OPEN + ' tegelijk · kijkt naar ' + Object.keys(scout.state.coins).length + ' coins per candle'];
+  const open = huntOpen.filter(m => live.isOpen(m));
+  if (open.length) lines.push('Open: ' + open.map(m => infoOf(coin(m), m).symbol).join(', '));
+  const okN = huntLog.filter(x => x.ok).length;
+  lines.push(huntLog.length ? 'Laatste signalen (' + okN + ' goedgekeurd van ' + huntLog.length + '):' : 'Nog geen verse signalen gezien — de jager kijkt na elke candle.');
+  huntLog.slice(0, 10).forEach(x => lines.push((x.ok ? '✅ ' : '✖️ ') + new Date(x.t).toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit' }) + ' ' + x.sym + ' (' + x.src + (x.pats.length ? ' · ' + x.pats.join(', ') : '') + ')' + (x.ok ? (x.action ? ' → ' + x.action : '') : ' — ' + x.why)));
+  return lines.join('\n');
+}
 const scout = createScout({
-  timeframe: TIMEFRAME, runEngine, getParams, fetchBestPair, fetchOHLCV, tradesFromEvents, candidates: scoutCandidates,
+  timeframe: TIMEFRAME, runEngine, getParams, fetchBestPair, fetchOHLCV, fetchHistory, tradesFromEvents, candidates: scoutCandidates,
+  check: c => cloud.check(c, null, { quiet: true }),
+  onSignal: s => onHuntSignal(s),
   isActive: m => activeTokens().includes(m),
   record: t => cloud.record(t, notify).catch(() => false),
 });
@@ -793,7 +881,7 @@ function saveState(){
   if (!STATE_FILE) return;
   try {
     const o = { v: 1, savedAt: Date.now(), manualStop, autoTokens, addedTokens, removedTokens, lossBaseline, journal: journal.slice(-500), live: live.exportState(), lastReportDay, coins: {},
-      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) }, copy: copy.exportState(), scout: scout.exportState(), buyMeta: Object.fromEntries(buyMeta) };
+      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) }, copy: copy.exportState(), scout: scout.exportState(), huntOpen, buyMeta: Object.fromEntries(buyMeta) };
     coins.forEach((c, t) => { o.coins[t] = { params: c.params, pendingParams: c.pendingParams, paused: c.paused, tunedAt: c.tunedAt, livePauseUntil: c.livePauseUntil || 0, livePauseAfter: c.livePauseAfter || 0 }; });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(o));
@@ -812,6 +900,8 @@ function loadState(){
     live.importState(o.live);
     copy.importState(o.copy);
     scout.importState(o.scout);
+    huntOpen = Array.isArray(o.huntOpen) ? o.huntOpen : [];
+    huntOpen.forEach(m => coin(m));   // keep managing what the hunter bought before the restart
     Object.entries(o.buyMeta || {}).forEach(([k, v]) => buyMeta.set(k, v));
     if (o.kansen && Array.isArray(o.kansen.w) && o.kansen.w.length === KS_PRIOR.length)
       ks = { w: o.kansen.w, b: Number(o.kansen.b) || 0, pending: o.kansen.pending || [], done: o.kansen.done || [] };
@@ -994,7 +1084,8 @@ function statusText(){
   lines.push('Auto-tune: ' + (TUNE_ON ? (TUNE_APPLY ? 'aan' : 'alleen voorstellen') : 'uit') + ' · stop-wachter: ' + (STOPWATCH_MS ? 'aan' : 'uit')
     + (KANSEN ? ' · kansen: ' + ksStats().n + ' uitkomsten' + (ksFilterActive() ? ' (filter AAN)' : ' (leert, filter nog uit)') : ''));
   lines.push(cloud.cfg.on ? '☁️ Cloud-geheugen AAN (' + cloud.cfg.bot + ')' + (cloud.stats.blocked ? ' · ' + cloud.stats.blocked + ' buy(s) tegengehouden' : '') + (cloud.stats.errors ? ' · ⚠️ ' + cloud.stats.errors + ' fout(en)' : '') : '☁️ Cloud-geheugen uit');
-  if (scout.cfg.on) lines.push('🎓 Oefen-modus: ' + Object.keys(scout.state.coins).length + ' coins · ' + scout.state.stats.n + ' oefen-trades (meer: /oefen)');
+  if (HUNT) lines.push('🎯 Jager: ' + (huntLiveAllowed() ? 'koopt echt (max ' + HUNT_MAX_OPEN + ')' : 'meldt alleen') + ' · ' + huntLog.filter(x => x.ok).length + ' goede kansen recent (meer: /jager)');
+  if (scout.cfg.on) lines.push('🎓 Oefen-modus: ' + Object.keys(scout.state.coins).length + ' coins · ' + scout.state.stats.n + ' oefen-trades · gereedheid ' + scout.readiness().pct + '% (meer: /oefen)');
   if (copy.state.wallets.length) lines.push('🐋 Wallets volgen: ' + copy.state.wallets.length + ' · stand ' + copy.cfg.mode + ' (meer: /wallets)');
   return lines.join('\n');
 }
@@ -1013,13 +1104,15 @@ async function handleCommand(text){
     const m = rawArg.match(/^(add|del)_([1-9A-HJ-NP-Za-km-z]{32,44})$/);
     if (m){ cmd = m[1] === 'add' ? '/coin' : '/weg'; rawArg = m[2]; }
     else if (/^(volg|ontvolg)_([1-9A-HJ-NP-Za-km-z]{32,44})$/.test(rawArg)){ const v = rawArg.split('_'); cmd = '/' + v[0]; rawArg = v[1]; }
-    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets|geheugen|oefen)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
+    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets|geheugen|oefen|jager|patronen)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
   }
   const arg = rawArg.toUpperCase();
   if (cmd === '/coin' || cmd === '/weg' || cmd === '/coinlijst') return coinCommand(cmd, rawArg.trim());
   if (cmd === '/volg' || cmd === '/ontvolg' || cmd === '/wallets'){ const answer = await copy.command(cmd, rawArg); if (cmd !== '/wallets') saveState(); return tgSend(answer); }
   if (cmd === '/geheugen') return tgSend(await cloud.text());
   if (cmd === '/oefen') return tgSend(scout.text());
+  if (cmd === '/jager') return tgSend(huntText());
+  if (cmd === '/patronen') return tgSend(await cloud.patternsText());
   if (cmd === '/status') return tgSend(statusText());
   if (cmd === '/rapport') return tgSend(reportText());
   if (cmd === '/kansen') return tgSend(KANSEN ? ksText() : 'Kansen staat uit (KANSEN=0).');
@@ -1051,7 +1144,7 @@ async function handleCommand(text){
   }
   if (cmd === '/start') return tgSend(statusText() + '\n\nStuur /help voor de commando\'s.');
   if (cmd.startsWith('/'))
-    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/oefen — oefen-trades met nep-geld op andere coins\n/help — deze lijst');
+    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/oefen — oefen-trades met nep-geld op andere coins\n/jager — welke kansen de jager vond en of hij koopt\n/patronen — welke chart-patronen winst gaven\n/help — deze lijst');
 }
 const MAX_COINS = Math.max(1, Math.floor(num('MAX_COINS', 6)));
 async function coinCommand(cmd, addr){
@@ -1180,7 +1273,7 @@ async function start(){
     const every = Math.max(5 * 60000, tfSeconds() * 1000);
     console.log('Oefen-modus AAN:', scout.cfg.coins, 'coins · elke', every / 60000, 'min · nep-inzet', scout.cfg.sol, 'SOL' + (cloud.cfg.on ? ' · naar cloud-geheugen' : ' · (cloud-geheugen uit: alleen tellen)'));
     const scoutTick = async () => {
-      try { const n = await scout.round(); if (n) { console.log('oefen:', n, 'nieuwe oefen-trade(s)'); saveState(); } }
+      try { const n = await scout.round(); if (n) { console.log('oefen:', n, 'nieuwe oefen-trade(s)'); const m = scout.milestone(); if (m) await notify(m); saveState(); } }
       catch (e){ console.error('oefen fout', e.message); }
       // just after a candle closed, like the real bot
       const tf = tfSeconds() * 1000, since = Date.now() % tf;
@@ -1233,4 +1326,4 @@ async function start(){
 if (require.main === module) start();
 module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
   pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
-  copy, cloud, scout, buyMeta, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };
+  copy, cloud, scout, buyMeta, onHuntSignal, huntText, get huntLog(){ return huntLog; }, get huntOpen(){ return huntOpen; }, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };

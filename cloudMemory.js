@@ -30,13 +30,16 @@ function keysFor(c){
     if (c.source) k.push('src:' + c.source);
     if (c.hour != null) { const b = Math.floor(c.hour / 4) * 4; k.push('uur:' + b + '-' + (b + 4)); }
     const lb = liqBucket(c.liq); if (lb) k.push('liq:' + lb);
+    (c.patterns || []).forEach(p => k.push('patroon:' + p));   // which chart patterns were there at the buy
   } else if (c.source) k.push('wallet:' + c.source);
   if (c.kind) k.push('soort:' + (c.kind === 'papier' || c.kind === 'nep-kopie' ? 'oefen' : 'echt'));   // only for the totals, never blocks
   return k;
 }
-const GENERAL = key => /^(src|uur|liq):/.test(key);
+const GENERAL = key => /^(src|uur|liq|patroon):/.test(key);
+let PATTERN_NAMES = {}; try { PATTERN_NAMES = require('./patterns').PATTERN_NAMES; } catch (_){}
 function describeKey(key, sym){
   const [t, v] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+  if (t === 'patroon') return 'patroon "' + (PATTERN_NAMES[v] || v) + '"';
   if (t === 'coin') return 'coin ' + (sym && sym[v] || v.slice(0, 4) + '…' + v.slice(-4));
   if (t === 'wallet') return 'wallet ' + v.slice(0, 4) + '…' + v.slice(-4);
   if (t === 'src') return v.split('+').map(x => ({ REV: 'Dip', BRK: 'Breakout', CONT: 'Herinstap' })[x] || x).join('+') + '-signalen';
@@ -106,13 +109,13 @@ function createCloud(o = {}){
   }
 
   /** Before a buy: { ok:true } or { ok:false, reason } */
-  async function check(c, notify){
+  async function check(c, notify, opt){
     if (!cfg.on || !cfg.learn) return { ok: true };
     try { await refresh(false); } catch (e){ fail(e, notify); }
     for (const k of keysFor(Object.assign({ hour: hourNL(now()) }, c))){
       const l = badLesson(k);
       if (l){
-        stats.blocked++;
+        if (!(opt && opt.quiet)) stats.blocked++;   // practice checks don't count as blocked real buys
         return { ok: false, key: k, reason: describeKey(k, symbols) + ' verloor ' + (l.n - l.wins) + ' van ' + l.n + ' trades (' + l.pnl.toFixed(4) + ' SOL)' };
       }
     }
@@ -131,7 +134,7 @@ function createCloud(o = {}){
       good: pnl > 0,
     };
     if (t.mint && t.symbol) symbols[t.mint] = t.symbol;
-    const ks = keysFor({ kind: row.kind, mint: row.mint, source: row.source, hour: row.hour, liq: row.liq_usd });
+    const ks = keysFor({ kind: row.kind, mint: row.mint, source: row.source, hour: row.hour, liq: row.liq_usd, patterns: t.patterns });
     const learnLocal = () => ks.forEach(k => { const l = lessons.get(k) || { n: 0, wins: 0, pnl: 0, last: now() }; l.n++; if (pnl > 0) l.wins++; l.pnl += pnl; l.last = now(); lessons.set(k, l); });
     try {
       try { await api('trades', { body: row, headers: { Prefer: 'return=minimal' } }); }
@@ -143,6 +146,25 @@ function createCloud(o = {}){
     } catch (e){ learnLocal(); fail(e, notify); return false; }   // Supabase down: at least this bot learns
   }
 
+  /** average result per trade (in % of the stake) of setups like this one, from patterns and signal kind; null = not enough data */
+  function edge(c){
+    let sum = 0, n = 0;
+    for (const k of keysFor(Object.assign({ hour: hourNL(now()) }, c))){
+      if (!/^(patroon|src):/.test(k)) continue;
+      const l = lessons.get(k);
+      if (!l || l.n < cfg.minN * 2 || now() - l.last > cfg.lessonDays * 86400000) continue;
+      sum += l.pnl / l.n; n++;
+    }
+    return n ? sum / n : null;
+  }
+  /** which chart patterns won or lost (practice + real) */
+  async function patternsText(){
+    if (!cfg.on) return '📐 Patronen: cloud-geheugen staat uit (SUPABASE_URL / SUPABASE_KEY).';
+    try { await refresh(true); } catch (e){ return '📐 Patronen: ' + e.message; }
+    const rows = [...lessons.entries()].filter(([k]) => k.startsWith('patroon:')).sort((a, b) => (b[1].pnl / b[1].n) - (a[1].pnl / a[1].n));
+    if (!rows.length) return '📐 Nog geen patronen geleerd — dat komt vanzelf met de oefen-trades.';
+    return '📐 Welke chart-patronen werkten (alle oefen- en echte trades):\n' + rows.map(([k, l]) => (l.pnl >= 0 ? '✅ ' : '❌ ') + describeKey(k, symbols) + ': ' + l.n + ' trades · ' + Math.round(l.wins / l.n * 100) + '% winst · gem. ' + (l.pnl / l.n >= 0 ? '+' : '') + (l.pnl / l.n).toFixed(4) + ' SOL' + (l.n < cfg.minN * 2 ? ' (nog weinig data)' : '')).join('\n');
+  }
   async function cleanup(notify){
     if (!cfg.on) return 0;
     try { const r = await api('rpc/forget_bad', { body: { p_days: cfg.keepBadDays } }); return Number(r) || 0; }
@@ -171,7 +193,7 @@ function createCloud(o = {}){
     return lines.join('\n');
   }
 
-  return { cfg, check, record, refresh, cleanup, text, stats, keysFor, get lessons(){ return lessons; } };
+  return { cfg, check, record, refresh, cleanup, text, stats, keysFor, edge, patternsText, get lessons(){ return lessons; } };
 }
 
 module.exports = { createCloud, keysFor, hourNL, liqBucket };
