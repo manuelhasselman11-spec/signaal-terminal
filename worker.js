@@ -105,6 +105,7 @@ function getParams() {
     lossMode: (process.env.LOSS_MODE || 'skip').trim().toLowerCase() === 'tighten' ? 'tighten' : 'skip',   // skip = skip trades whose stop is further away; tighten = old behaviour
     quickBars: num('QUICK_EXIT_BARS', 0),        // after N candles still under the signal price → sell (0 = off; tests showed it cost money)
     usePatterns: flag('USE_PATTERNS', true),     // skip buys after a big sprint or in a falling trend
+    minEr: num('MIN_ER', 0),                      // optional trend-quality filter (0 = off, e.g. 0.3 = only buy in a clean, steady rise)
     slipPct: num('SLIP_PCT', 0.5),               // backtests/practice: buy this % worse and stop-sells this % worse (live fills lag)
     htfLen: 20
   };
@@ -157,26 +158,37 @@ function runEngine(bars, p) {
   const emaF = computeEMA(C, p.emaFastLen), emaS = computeEMA(C, p.emaSlowLen);
   const atr = computeATR(H, L, C, p.atrLen), rsi = computeRSI(C, p.rsiLen);
   const hasVol = V.some(v => v > 0);
-  const barStep = n > 1 ? bars[n - 1].time - bars[n - 2].time : 0;
+  // candle size = smallest gap in the last 50 candles (GeckoTerminal skips candles without trades: one gap must not double it)
+  let barStep = 0;
+  for (let k = Math.max(1, n - 50); k < n; k++){ const d = bars[k].time - bars[k - 1].time; if (d > 0 && (!barStep || d < barStep)) barStep = d; }
   const slip = Math.max(0, Number(p.slipPct) || 0) / 100;
   // trend filter: only buy above a slow, rising EMA
   const useTrend = p.useTrend !== false && p.trendLen > 1;
   const emaT = useTrend ? computeEMA(C, p.trendLen) : null;
   const warm = Math.max(p.emaSlowLen, p.atrLen + 1, p.rsiLen + 1, p.donLen + 1, p.sweepLen + 1, 5, useTrend ? Math.min(p.trendLen, 40) : 0);
-  // higher-timeframe filter: every htfMult candles form one bigger candle; only buy when that bigger trend is up.
+  // higher-timeframe filter: candles grouped by CLOCK TIME into bigger candles (htfMult × the candle size); only buy when that bigger trend is up.
+  // Grouping by time (not by position in the list) gives the live bot (last 300 candles) the same groups as a long backtest.
   // Uses only bigger candles that are already finished at this moment (no peeking ahead).
-  const useHtf = !!p.useHtf && p.htfMult > 1 && p.htfLen > 1;
-  let emaH = null;
+  const useHtf = !!p.useHtf && p.htfMult > 1 && p.htfLen > 1 && barStep > 0;
+  let emaH = null; const htfDone = useHtf ? new Array(n) : null;
   if (useHtf){
-    const hc = [];
-    for (let g = 0; (g + 1) * p.htfMult - 1 < n; g++) hc.push(C[(g + 1) * p.htfMult - 1]);
+    const hc = [], gsec = barStep * p.htfMult;
+    let pendG = null, pendC = 0;
+    for (let i = 0; i < n; i++){
+      const g = Math.floor(bars[i].time / gsec);
+      if (pendG !== null && g !== pendG){ hc.push(pendC); pendG = null; }   // a group with missing candles ends when the next group starts
+      if (bars[i].time + barStep >= (g + 1) * gsec){ hc.push(C[i]); pendG = null; } else { pendG = g; pendC = C[i]; }
+      htfDone[i] = hc.length - 1;
+    }
     emaH = computeEMA(hc, p.htfLen);
   }
   const htfOkAt = i => {
     if (!useHtf) return true;
-    const g = Math.floor(i / p.htfMult), done = (i % p.htfMult === p.htfMult - 1) ? g : g - 1;
+    const done = htfDone[i];
     return done >= 1 && emaH[done] != null && C[i] > emaH[done] && emaH[done] > emaH[done - 1];
   };
+  // trend quality (efficiency ratio over 20 candles): net rise / total movement. 1 = straight up, 0 = going nowhere. Optional (MIN_ER).
+  const erAt = i => { if (i < 20) return 0; let path = 0; for (let k = i - 19; k <= i; k++) path += Math.abs(C[k] - C[k - 1]); return path > 0 ? (C[i] - C[i - 20]) / path : 0; };
 
   let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1, sigPx = 0;
   let lastBullCross = -1e9, crossUsed = true, lastExitIdx = -1e9;
@@ -200,22 +212,22 @@ function runEngine(bars, p) {
       } else {
         if (!tp1Hit && H[i] >= tp1) {
           tp1Hit = true;
-          gross += p.partialFrac * (tp1 / entry - 1);
-          events.push({ time: bars[i].time, type: 'TP1', price: tp1 });
+          gross += p.partialFrac * (tp1 * (1 - slip) / entry - 1);   // the bot sells at market after it sees the target: same slippage as other exits
+          events.push({ time: bars[i].time, type: 'TP1', price: tp1 * (1 - slip) });
           size -= p.partialFrac;
           if (p.beAfterTp1) stop = Math.max(stop, entry);
         }
         if (H[i] >= tp2 && !tp2Hit && !p.letRun) {
-          gross += size * (tp2 / entry - 1);
-          events.push({ time: bars[i].time, type: 'TP2', price: tp2 });
+          gross += size * (tp2 * (1 - slip) / entry - 1);
+          events.push({ time: bars[i].time, type: 'TP2', price: tp2 * (1 - slip) });
           finish(i); exitedThisBar = true;
         } else {
           // "let it run": at TP2 sell only part, lock in at least TP1 and let a trailing stop ride the rest
           if (H[i] >= tp2 && !tp2Hit && p.letRun) {
             tp2Hit = true;
             const rf = Math.min(0.95, Math.max(0.05, p.runFrac || 0.5));
-            gross += size * rf * (tp2 / entry - 1);
-            events.push({ time: bars[i].time, type: 'TP2', price: tp2, frac: rf });
+            gross += size * rf * (tp2 * (1 - slip) / entry - 1);
+            events.push({ time: bars[i].time, type: 'TP2', price: tp2 * (1 - slip), frac: rf });
             size -= size * rf;
             stop = Math.max(stop, tp1);
           }
@@ -272,7 +284,7 @@ function runEngine(bars, p) {
         if (C[i] > hi && volOk) tags.push('BRK');
       }
 
-      const trendOk = (!useTrend || (C[i] > emaT[i] && emaT[i] > emaT[i - 3])) && htfOkAt(i);
+      const trendOk = (!useTrend || (C[i] > emaT[i] && emaT[i] > emaT[i - 3])) && htfOkAt(i) && (!(p.minEr > 0) || erAt(i) >= p.minEr);
       const pats = tags.length ? patternsAt(bars, i) : [];
       // pattern filter: never buy right after a big sprint or in a falling trend
       const patOk = !p.usePatterns || !pats.some(x => PATTERN_BAD.includes(x));
@@ -468,6 +480,7 @@ async function buyPressure(mint){
   return m5 ? { buys: Number(m5.buys) || 0, sells: Number(m5.sells) || 0 } : null;
 }
 /** meta: { kind, source, liq, patterns } → { ok, why, stake (0.25–1), notes } */
+const blockMsgAt = new Map();   // coin|lesson → last Telegram message about it
 async function preBuyChecks(mint, meta){
   const notes = [];
   if (RUGCHECK){
@@ -561,7 +574,13 @@ async function tickOne(token) {
     if (buyEv && !live.isOpen(token)){
       const meta = { kind: 'strategie', source: buyEv.src || 'EMA', liq: infoOf(c, token).liquidityUsd, buyTime: Date.now(), patterns: buyEv.pats || [] };
       const ok = await cloud.check({ kind: 'strategie', mint: token, source: meta.source, liq: meta.liq, patterns: meta.patterns }, notify);
-      if (!ok.ok){ await notify('🧠 ' + tag + ': BUY overgeslagen door het cloud-geheugen — ' + ok.reason + '. (Zo leert de bot van fouten; /geheugen voor alle lessen)'); todo = todo.filter(e => e.type !== 'BUY'); }
+      if (!ok.ok){
+        // one message per coin + lesson per 6 hours (the same lesson blocks every signal on that coin)
+        const mk = token + '|' + ok.key, last = blockMsgAt.get(mk) || 0;
+        if (Date.now() - last > 6 * 3600000){ blockMsgAt.set(mk, Date.now()); await notify('🧠 ' + tag + ': BUY overgeslagen door het cloud-geheugen — ' + ok.reason + '. (Zo leert de bot van fouten; /geheugen voor alle lessen. Deze melding komt max. 1× per 6 uur.)'); }
+        else console.log(tag, 'BUY overgeslagen (geheugen):', ok.reason);
+        todo = todo.filter(e => e.type !== 'BUY');
+      }
       else {
         const pre = await preBuyChecks(token, meta);
         if (!pre.ok){ await notify('🛡️ ' + tag + ': BUY overgeslagen — ' + pre.why); todo = todo.filter(e => e.type !== 'BUY'); }
@@ -686,9 +705,9 @@ function tuneGrid(base){
 }
 // score for the learn part: profit with a drawdown penalty; for losing settings a deeper drawdown makes the score worse, not better
 function rankOf(t){ const l = Math.log(t.e), pen = 1 + 3 * Math.abs(t.dd); return l >= 0 ? l / pen : l * pen; }
-const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend', 'useHtf', 'letRun', 'useCont', 'maxLossPct', 'lossMode', 'quickBars', 'usePatterns'];
-const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND', useHtf: 'USE_HTF', letRun: 'LET_RUN', useCont: 'USE_CONT', maxLossPct: 'MAX_LOSS_PCT', lossMode: 'LOSS_MODE', quickBars: 'QUICK_EXIT_BARS', usePatterns: 'USE_PATTERNS' };
-function describe(p){ return 'EMA ' + p.emaFastLen + '/' + p.emaSlowLen + ' · SL ' + p.atrMultSL + '×ATR · TP ' + p.rrTp1 + '/' + p.rrTp2 + ' · ' + [p.useEma && 'EMA', p.useRev && 'Dip', p.useBrk && 'Breakout'].filter(Boolean).join('+') + (p.useTrend ? ' · trend' : '') + (p.useHtf ? ' · grote tf' : '') + (p.letRun ? ' · winst laten lopen' : '') + (p.useCont ? ' · herinstap' : '') + (p.maxLossPct > 0 ? ' · max ' + p.maxLossPct + '% verlies' : '') + (p.quickBars > 0 ? ' · snel uit na ' + p.quickBars : '') + (p.usePatterns === false ? ' · zonder patroonfilter' : ''); }
+const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend', 'useHtf', 'letRun', 'useCont', 'maxLossPct', 'lossMode', 'quickBars', 'usePatterns', 'minEr'];
+const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND', useHtf: 'USE_HTF', letRun: 'LET_RUN', useCont: 'USE_CONT', maxLossPct: 'MAX_LOSS_PCT', lossMode: 'LOSS_MODE', quickBars: 'QUICK_EXIT_BARS', usePatterns: 'USE_PATTERNS', minEr: 'MIN_ER' };
+function describe(p){ return 'EMA ' + p.emaFastLen + '/' + p.emaSlowLen + ' · SL ' + p.atrMultSL + '×ATR · TP ' + p.rrTp1 + '/' + p.rrTp2 + ' · ' + [p.useEma && 'EMA', p.useRev && 'Dip', p.useBrk && 'Breakout'].filter(Boolean).join('+') + (p.useTrend ? ' · trend' : '') + (p.useHtf ? ' · grote tf' : '') + (p.letRun ? ' · winst laten lopen' : '') + (p.useCont ? ' · herinstap' : '') + (p.maxLossPct > 0 ? ' · max ' + p.maxLossPct + '% verlies' : '') + (p.quickBars > 0 ? ' · snel uit na ' + p.quickBars : '') + (p.usePatterns === false ? ' · zonder patroonfilter' : '') + (p.minEr > 0 ? ' · trend-kwaliteit ≥ ' + p.minEr : ''); }
 const pctStr = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
 
 async function evaluateCoin(token){
@@ -719,7 +738,7 @@ async function evaluateCoin(token){
   results.sort((a, b) => b.rank - a.rank);
   // stage 2: on the 30 best, also try "let profits run" and "re-enter in the trend"
   const extra = [];
-  for (const r of results.slice(0, 30)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }, { maxLossPct: 0, quickBars: 0 }, { maxLossPct: 3, lossMode: 'skip' }, { maxLossPct: 8, lossMode: 'skip' }, { quickBars: 3 }, { usePatterns: false }]){
+  for (const r of results.slice(0, 30)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }, { maxLossPct: 0, quickBars: 0 }, { maxLossPct: 3, lossMode: 'skip' }, { maxLossPct: 8, lossMode: 'skip' }, { quickBars: 3 }, { usePatterns: false }, { minEr: 0.3 }]){
     const r2 = evalP(Object.assign({}, r.p, v));
     if (r2.train.n >= 8) extra.push(Object.assign(r2, { rank: rankOf(r2.train) }));
   }
@@ -730,13 +749,17 @@ async function evaluateCoin(token){
 /**
  * From the 10 best on the LEARN part, pick the one that does best on the CHOOSE part.
  * Only adopt it if it ALSO makes money on the TEST part that played no role in the choice (no more "picked on the test").
+ * With ±11.000 combinations tried, 2–3 lucky trades prove nothing: the choose and test parts need enough trades
+ * (TUNE_MIN_TRADES, default 4 each and 10 together) before a new setting is adopted or a coin counts as "working".
  */
+const TUNE_MIN = Math.max(2, Number(process.env.TUNE_MIN_TRADES) || 4);
 function chooseTuned(results, cur){
-  const pool = results.slice(0, 10).filter(r => r.val.n >= 3 && r.val.e > 1.01);
+  const pool = results.slice(0, 10).filter(r => r.val.n >= TUNE_MIN && r.val.e > 1.01);
   pool.sort((a, b) => b.val.e - a.val.e);
   const best = pool[0] || null;
-  const better = !!best && best.test.n >= 2 && best.test.e > 1.005 && best.test.e >= cur.test.e && best.full.pf >= 1.1 && TUNE_KEYS.some(k => best.p[k] !== cur.p[k]);
-  const worksNow = (cur.test.n >= 2 && cur.test.e > 1.005) || better;
+  const enough = r => r.test.n >= TUNE_MIN && r.val.n + r.test.n >= TUNE_MIN * 2.5;
+  const better = !!best && enough(best) && best.test.e > 1.005 && best.val.e * best.test.e > 1.015 && best.test.e >= cur.test.e && best.full.pf >= 1.2 && TUNE_KEYS.some(k => best.p[k] !== cur.p[k]);
+  const worksNow = (cur.test.n >= TUNE_MIN && cur.test.e > 1.005) || better;
   return { best, better, worksNow };
 }
 function applyParams(c, token, p){
@@ -806,10 +829,11 @@ async function pickCoins(){
         c.ctx = { pair: pr, poolAddress: pr.pairAddress, network: 'solana' };
         const ev = await evaluateCoin(token);
         if (!ev){ dropped.push(sym + ' (te weinig data)'); continue; }
-        const useBest = ev.best && (ev.better || !(ev.cur.test.n >= 3 && ev.cur.test.e > 1.01));
+        // only a setting the tuner itself accepted (never one it rejected); the test part is a pass/fail gate, NOT the ranking
+        const useBest = !!(ev.best && ev.better);
         const pick = useBest ? ev.best : ev.cur;
-        const ok = pick.test.n >= 3 && pick.test.e > 1.01 && pick.full.pf >= 1.1;
-        if (ok) scored.push({ token, sym, score: pick.test.e, pick, useBest });
+        const ok = pick.test.n >= TUNE_MIN && pick.test.e > 1.01 && pick.full.pf >= 1.2;
+        if (ok) scored.push({ token, sym, score: pick.train.e * pick.val.e, testE: pick.test.e, pick, useBest });
         else dropped.push(sym + ' (testdeel ' + pctStr(pick.test.e - 1) + ')');
       } catch (e){ dropped.push(sym + ' (fout: ' + e.message.slice(0, 40) + ')'); }
       await sleep(1500);
@@ -821,7 +845,7 @@ async function pickCoins(){
     autoTokens = chosen.map(x => x.token);
     const leaving = before.filter(t => !autoTokens.includes(t));
     let msg = '🔎 Coin-keuze (' + TUNE_DAYS + ' dagen, ' + TIMEFRAME + '): ';
-    msg += chosen.length ? 'gekozen ' + chosen.map(x => x.sym + ' (testdeel ' + pctStr(x.score - 1) + ')').join(', ') : 'geen enkele coin is nu overtuigend — de bot koopt niets nieuws';
+    msg += chosen.length ? 'gekozen ' + chosen.map(x => x.sym + ' (testdeel ' + pctStr(x.testE - 1) + ')').join(', ') : 'geen enkele coin is nu overtuigend — de bot koopt niets nieuws';
     if (leaving.length) msg += '\nAfgevallen: ' + leaving.map(t => infoOf(coin(t), t).symbol).join(', ') + (leaving.some(t => live.isOpen(t)) ? ' (open posities worden nog netjes verkocht)' : '');
     if (dropped.length) msg += '\nNiet gekozen: ' + dropped.slice(0, 10).join(' · ');
     await notify(msg);
@@ -1453,6 +1477,8 @@ async function start(){
     setTimeout(scoutTick, 2 * 60000);
   }
   if (cloud.cfg.on) setInterval(() => { cloud.refresh(true).catch(e => console.error('cloud-geheugen:', e.message)); }, 6 * 3600 * 1000);
+  // clean old losing trades every 12 h — also without Telegram (the daily report is not the only place anymore)
+  if (cloud.cfg.on) setInterval(() => { cloud.cleanup().then(n => { if (n) console.log('cloud-geheugen:', n, 'oude verliezende trades gewist (lessen blijven)'); }).catch(() => {}); }, 12 * 3600 * 1000);
   loop();
   if (STOPWATCH_MS) setInterval(() => { stopWatchTick().catch(e => console.error('stop-wachter fout', e.message)); }, STOPWATCH_MS);
   if (TG_CMDS){

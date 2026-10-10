@@ -81,7 +81,7 @@ function createCloud(o = {}){
   };
   const fetchFn = o.fetch || ((...a) => fetch(...a));
   const now = o.now || (() => Date.now());
-  let lessons = new Map(), loadedAt = 0, warned = false, symbols = {};
+  let lessons = new Map(), loadedAt = 0, warned = false, symbols = {}, rpcRecord = true;
   const stats = { saved: 0, blocked: 0, errors: 0 };
 
   async function api(path, opts = {}){
@@ -160,15 +160,25 @@ function createCloud(o = {}){
     };
     if (t.mint && t.symbol) symbols[t.mint] = t.symbol;
     const ks = keysFor({ kind: row.kind, mint: row.mint, source: row.source, hour: row.hour, liq: row.liq_usd, patterns: t.patterns, tf: cfg.tf });
-    const learnLocal = () => ks.forEach(k => { const l = lessons.get(k) || { n: 0, wins: 0, pnl: 0, last: now() }; l.n++; if (pnl > 0) l.wins++; l.pnl += pnl; l.last = now(); lessons.set(k, l); });
+    let learned = false;
+    const learnLocal = () => { if (learned) return; learned = true; ks.forEach(k => { const l = lessons.get(k) || { n: 0, wins: 0, pnl: 0, last: now() }; l.n++; if (pnl > 0) l.wins++; l.pnl += pnl; l.last = now(); lessons.set(k, l); }); };
     try {
+      if (rpcRecord){
+        // one call: store + learn together in the database (never "stored but not learned", never learned twice)
+        try {
+          const r = await api('rpc/record_trade', { body: { p_row: row, p_keys: ks } });
+          if (r === 'dup') return 'dup';
+          if (r === 'ok'){ learnLocal(); stats.saved++; warned = false; return true; }
+          rpcRecord = false;   // unexpected answer (not our function): use the two calls below
+        } catch (e){ if (!/Supabase 404|PGRST202|record_trade/.test(e.message)) throw e; rpcRecord = false; }   // old database setup: use the two calls below
+      }
       try { await api('trades', { body: row, headers: { Prefer: 'return=minimal' } }); }
       catch (e){ if (/Supabase 409/.test(e.message)) return 'dup'; throw e; }   // the other bot already stored this practice trade
       learnLocal();
       if (ks.length) await api('rpc/learn', { body: { p_keys: ks, p_win: pnl > 0, p_pnl: pnl } });
       stats.saved++; warned = false;
       return true;
-    } catch (e){ learnLocal(); fail(e, notify); return false; }   // Supabase down: at least this bot learns
+    } catch (e){ learnLocal(); fail(e, notify); return false; }   // Supabase down: at least this bot learns (once)
   }
 
   /** average result per trade (in % of the stake) of setups like this one, from patterns and signal kind; null = not enough data */

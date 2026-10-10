@@ -150,7 +150,7 @@ function createCopy(o = {}){
     if (w){ w.n++; if (pct > 0) w.wins++; w.pnlPct += pct; w.pnlSol += sol; }
     st.closed.push({ wallet: p.wallet, mint: p.mint, symbol: p.symbol, pct, sol, why, time: now(), held: now() - p.time });
     if (st.closed.length > 500) st.closed = st.closed.slice(-500);
-    if (o.onPaperClose){ try { o.onPaperClose({ kind: 'nep-kopie', mint: p.mint, symbol: p.symbol, source: p.wallet, spentSol: p.sol, pnlSol: sol, pnlPct: pct, exit: why, buyTime: p.time }); } catch (_){} }
+    if (o.onPaperClose){ try { o.onPaperClose({ kind: 'nep-kopie', mint: p.mint, symbol: p.symbol, source: p.wallet, spentSol: p.sol, pnlSol: sol, pnlPct: pct, exit: why, buyTime: p.time, sig: 'nep-kopie:' + p.wallet + ':' + p.mint + ':' + Math.floor((Number(p.time) || 0) / 1000) }); } catch (_){} }
     notify('📝 Nep-trade ' + p.symbol + ' (' + nameOf(w) + ') gesloten: ' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '% ≈ ' + (sol >= 0 ? '+' : '') + sol.toFixed(4) + ' SOL · ' + why);
   }
   async function sellLive(mint, pi, why){

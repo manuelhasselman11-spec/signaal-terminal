@@ -18,8 +18,14 @@
  */
 'use strict';
 
-const emptyStat = () => ({ n: 0, wins: 0, pnl: 0, gw: 0, gl: 0 });
-function addStat(s, pnl){ s.n++; s.pnl += pnl; if (pnl > 0){ s.wins++; s.gw += pnl; } else s.gl -= pnl; }
+const emptyStat = () => ({ n: 0, wins: 0, pnl: 0, gw: 0, gl: 0, qn: 0, qs: 0, qq: 0 });
+// qn/qs/qq: count, sum and sum of squares of the result per trade → how sure are we the profit is not luck (t-value)
+function addStat(s, pnl){ s.n++; s.pnl += pnl; if (pnl > 0){ s.wins++; s.gw += pnl; } else s.gl -= pnl; s.qn = (s.qn || 0) + 1; s.qs = (s.qs || 0) + pnl; s.qq = (s.qq || 0) + pnl * pnl; }
+function tValue(s){
+  const n = s.qn || 0; if (n < 2) return 0;
+  const mean = s.qs / n, v = (s.qq - s.qs * s.qs / n) / (n - 1);
+  return v > 0 ? mean / Math.sqrt(v / n) : (mean > 0 ? Infinity : 0);
+}
 
 function createScout(o){
   const env = o.env || process.env;
@@ -32,6 +38,7 @@ function createScout(o){
     repickH: Math.max(0.5, n('PAPER_REPICK_H', 2)),
     historyDays: Math.max(0, Math.min(14, n('PAPER_HISTORY_DAYS', env.PAPER_HISTORY === '0' ? 0 : 3))),
     goal: Math.max(20, Math.floor(n('PAPER_GOAL', 200))),
+    minT: Math.max(0, n('PAPER_MIN_T', 2)),   // how sure (t-value) the practice profit must be before "ready"; 2 ≈ 95% sure it is not luck
     huntGoal: Math.max(20, Math.floor(n('PAPER_HUNT_GOAL', 100))),   // the hunter is pickier, so fewer trades are needed
     tf: o.timeframe || 'minute:5',
   };
@@ -129,7 +136,7 @@ function createScout(o){
           } else st.hist++;
           found++;
           if (o.record) await o.record({ kind: 'papier', mint, symbol: c.symbol, source: buy.src || 'EMA', liq: c.liq, spentSol: cfg.sol, pnlSol, pnlPct: t.ret * 100,
-            exit: exit.why || exit.type || 'EXIT', buyTime: t.entryTime * 1000, sellTime: t.exitTime * 1000, sig: 'papier:' + mint + ':' + t.entryTime, patterns: buy.pats || [] });
+            exit: exit.why || exit.type || 'EXIT', buyTime: t.entryTime * 1000, sellTime: t.exitTime * 1000, sig: 'papier@' + cfg.tf + ':' + mint + ':' + t.entryTime, patterns: buy.pats || [] });
         }
         if (st.done.length > 6000) st.done = st.done.slice(-4000);
         // a fresh BUY on the candle that JUST closed: hand it to the hunter (it decides if it is good enough for real money)
@@ -151,21 +158,29 @@ function createScout(o){
     const s = kind === 'hunt' ? st.hunt : st.ok, goal = kind === 'hunt' ? cfg.huntGoal : cfg.goal;
     const pf = s.gl > 0 ? s.gw / s.gl : (s.gw > 0 ? Infinity : 0);
     const win = s.n ? s.wins / s.n : 0;
-    const ready = s.n >= goal && s.pnl > 0 && pf >= 1.2;
-    const bad = s.n >= goal && !ready;
-    return { n: s.n, goal, pnl: s.pnl, pf, win, ready, bad, pct: Math.min(100, Math.round(s.n / goal * 100)) };
+    // also needs t ≥ 2: with a strategy that has NO edge, "PF ≥ 1.2 after 200 trades" still happened by luck ±1 in 7 times
+    const t = tValue(s), sure = (s.qn || 0) >= 30 && t >= cfg.minT;
+    const ready = s.n >= goal && s.pnl > 0 && pf >= 1.2 && sure;
+    const bad = s.n >= goal && !ready && !(s.pnl > 0 && pf >= 1.2 && !sure);   // profitable but not yet sure enough = keep going, not "bad"
+    const unsure = s.n >= goal && s.pnl > 0 && pf >= 1.2 && !sure;
+    return { n: s.n, goal, pnl: s.pnl, pf, win, t, qn: s.qn || 0, unsure, ready, bad, pct: Math.min(unsure ? 99 : 100, Math.round(s.n / goal * 100)) };
   }
   const fmtS = x => (x >= 0 ? '+' : '') + x.toFixed(4) + ' SOL';
+  // why "not sure yet": too few trades measured since the update, or the profit is still too uneven
+  const sureTxt = r => r.qn < 30 ? 'de zekerheidsmeting heeft nog ' + (30 - r.qn) + ' nieuwe trades nodig (geteld sinds de update)'
+    : 'zekerheid ' + (isFinite(r.t) ? r.t.toFixed(1) : '∞') + ', nodig ' + cfg.minT;
   const line = (label, s) => label + ': ' + s.n + ' trades · ' + (s.n ? Math.round(s.wins / s.n * 100) : 0) + '% winst · ' + fmtS(s.pnl) + (s.gl > 0 ? ' · PF ' + (s.gw / s.gl).toFixed(2) : '');
   function huntReadyText(){
     const r = readiness('hunt');
     return '🎯 Zoals de Jager koopt: ' + (r.ready ? '✅ klaar (' + r.n + ' trades, ' + fmtS(r.pnl) + ', PF ' + (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') + ') — de Jager mag echt kopen'
+      : r.unsure ? '⏳ winst, maar nog niet zeker genoeg (' + r.n + ' trades, ' + fmtS(r.pnl) + ', ' + sureTxt(r) + ')'
       : r.bad ? '❌ niet goed genoeg (' + r.n + ' trades, ' + fmtS(r.pnl) + ') — de Jager koopt niet echt'
       : r.pct + '% (' + r.n + ' van ' + r.goal + ' trades' + (r.n ? ', ' + fmtS(r.pnl) : '') + ')');
   }
   function readyText(){
     const r = readiness();
     if (r.ready) return '✅ KLAAR voor echt geld: ' + r.n + ' vooruit-oefentrades (die door de lessen kwamen) samen ' + fmtS(r.pnl) + ', PF ' + (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') + '. Begin met je huidige inzet (TRADE_AMOUNT_SOL) — de kosten in het oefenen zijn daarop berekend.';
+    if (r.unsure) return '⏳ Bijna: ' + r.n + ' vooruit-oefentrades samen ' + fmtS(r.pnl) + ' (PF ' + (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') + '), maar nog niet zeker genoeg dat dit geen geluk is (' + sureTxt(r) + '). Hij oefent door.';
     if (r.bad) return '❌ Nog NIET klaar: na ' + r.n + ' vooruit-oefentrades is het resultaat ' + fmtS(r.pnl) + ' (PF ' + (isFinite(r.pf) ? r.pf.toFixed(2) : '∞') + '). De strategie verdient zo niet genoeg na kosten — echt geld zou nu verlies geven. Laat hem verder leren, of probeer andere instellingen (/tune).';
     return '⏳ Gereedheid ' + r.pct + '%: ' + r.n + ' van ' + r.goal + ' vooruit-oefentrades' + (r.n ? ' (tot nu toe ' + fmtS(r.pnl) + ')' : '') + '. Pas daarna zegt de bot eerlijk of echt geld verstandig is.';
   }
@@ -209,4 +224,4 @@ function createScout(o){
   return { cfg, round, pick, text, readiness, readyText, huntReadyText, milestone, exportState, importState, get state(){ return st; } };
 }
 
-module.exports = { createScout };
+module.exports = { createScout, addStat, tValue };
