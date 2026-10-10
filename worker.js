@@ -101,8 +101,9 @@ function getParams() {
     useCont: flag('USE_CONT', false),
     contBars: num('CONT_BARS', 30),
     htfMult: num('HTF_MULT', 4),
-    maxLossPct: num('MAX_LOSS_PCT', 2),          // stop never more than 2% under the buy price
-    quickBars: num('QUICK_EXIT_BARS', 3),        // after 3 candles still under the buy price → sell (0 = off)
+    maxLossPct: num('MAX_LOSS_PCT', 5),          // max loss per trade in % (see LOSS_MODE)
+    lossMode: (process.env.LOSS_MODE || 'skip').trim().toLowerCase() === 'tighten' ? 'tighten' : 'skip',   // skip = skip trades whose stop is further away; tighten = old behaviour
+    quickBars: num('QUICK_EXIT_BARS', 0),        // after N candles still under the signal price → sell (0 = off; tests showed it cost money)
     usePatterns: flag('USE_PATTERNS', true),     // skip buys after a big sprint or in a falling trend
     slipPct: num('SLIP_PCT', 0.5),               // backtests/practice: buy this % worse and stop-sells this % worse (live fills lag)
     htfLen: 20
@@ -177,7 +178,7 @@ function runEngine(bars, p) {
     return done >= 1 && emaH[done] != null && C[i] > emaH[done] && emaH[done] > emaH[done - 1];
   };
 
-  let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1;
+  let inPos = false, entry = 0, stop = 0, tp1 = 0, tp2 = 0, tp1Hit = false, size = 0, hh = 0, src = '', entryIdx = -1, sigPx = 0;
   let lastBullCross = -1e9, crossUsed = true, lastExitIdx = -1e9;
   let tp2Hit = false, lastWinExitIdx = -1e9, gross = 0;
   const events = [];
@@ -218,7 +219,7 @@ function runEngine(bars, p) {
             size -= size * rf;
             stop = Math.max(stop, tp1);
           }
-          if (p.quickBars > 0 && !tp1Hit && i - entryIdx >= p.quickBars && C[i] < entry) {
+          if (p.quickBars > 0 && !tp1Hit && i - entryIdx >= p.quickBars && C[i] < sigPx) {
             // "snel uit": after N candles still under the buy price → the idea did not work, get out before it gets worse
             gross += size * (C[i] * (1 - slip) / entry - 1);
             events.push({ time: bars[i].time, type: 'EXIT', price: C[i] * (1 - slip), why: 'snel uit' });
@@ -282,14 +283,18 @@ function runEngine(bars, p) {
         const structStop = swingLow - atr[i] * p.atrMultSL;
         // targets come from the chart structure; the max-loss cap only pulls the STOP closer (better risk/reward, same targets)
         const risk = C[i] - structStop;
-        const stopPx = p.maxLossPct > 0 ? Math.max(structStop, C[i] * (1 - p.maxLossPct / 100)) : structStop;   // never more than X% under the buy price
+        // max loss: 'skip' (default) = only take trades whose natural stop is within X% (the stop is never pulled into normal price noise);
+        // 'tighten' (old) = pull the stop up to X% under the buy price
+        const tighten = p.lossMode === 'tighten';
+        const stopPx = p.maxLossPct > 0 && tighten ? Math.max(structStop, C[i] * (1 - p.maxLossPct / 100)) : structStop;
+        const lossOk = !(p.maxLossPct > 0) || tighten || (1 - structStop / (C[i] * (1 + slip))) * 100 <= p.maxLossPct;
         // cost filter: the first profit target must be clearly bigger than what the trade costs
         const edgeOk = !(p.minEdge > 0) || (risk * p.rrTp1 / C[i] * 100) >= p.minEdge * p.costPct;
-        if (risk > 0 && edgeOk) {
+        if (risk > 0 && edgeOk && lossOk) {
           // live, the bot buys some seconds after the candle closed: count a little worse price (SLIP_PCT)
           inPos = true; entry = C[i] * (1 + slip); stop = stopPx;
           tp1 = C[i] + risk * p.rrTp1; tp2 = C[i] + risk * p.rrTp2;
-          tp1Hit = false; tp2Hit = false; gross = 0; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i;
+          tp1Hit = false; tp2Hit = false; gross = 0; size = 1; hh = H[i]; src = tags.join('+'); entryIdx = i; sigPx = C[i];
           events.push({ time: bars[i].time, type: 'BUY', price: entry, src, pats });
         }
       }
@@ -679,8 +684,10 @@ function tuneGrid(base){
       out.push(Object.assign({}, base, flags, { emaFastLen: f, emaSlowLen: sl, atrMultSL: a, rrTp1: t1, rrTp2: t2, useTrend: tr, useHtf: hf }));
   return out;
 }
-const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend', 'useHtf', 'letRun', 'useCont', 'maxLossPct', 'quickBars', 'usePatterns'];
-const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND', useHtf: 'USE_HTF', letRun: 'LET_RUN', useCont: 'USE_CONT', maxLossPct: 'MAX_LOSS_PCT', quickBars: 'QUICK_EXIT_BARS', usePatterns: 'USE_PATTERNS' };
+// score for the learn part: profit with a drawdown penalty; for losing settings a deeper drawdown makes the score worse, not better
+function rankOf(t){ const l = Math.log(t.e), pen = 1 + 3 * Math.abs(t.dd); return l >= 0 ? l / pen : l * pen; }
+const TUNE_KEYS = ['emaFastLen', 'emaSlowLen', 'atrMultSL', 'rrTp1', 'rrTp2', 'useEma', 'useRev', 'useBrk', 'useTrend', 'useHtf', 'letRun', 'useCont', 'maxLossPct', 'lossMode', 'quickBars', 'usePatterns'];
+const ENV_NAME = { emaFastLen: 'EMA_FAST', emaSlowLen: 'EMA_SLOW', atrMultSL: 'ATR_MULT_SL', rrTp1: 'RR_TP1', rrTp2: 'RR_TP2', useEma: 'USE_EMA', useRev: 'USE_REV', useBrk: 'USE_BRK', useTrend: 'USE_TREND', useHtf: 'USE_HTF', letRun: 'LET_RUN', useCont: 'USE_CONT', maxLossPct: 'MAX_LOSS_PCT', lossMode: 'LOSS_MODE', quickBars: 'QUICK_EXIT_BARS', usePatterns: 'USE_PATTERNS' };
 function describe(p){ return 'EMA ' + p.emaFastLen + '/' + p.emaSlowLen + ' · SL ' + p.atrMultSL + '×ATR · TP ' + p.rrTp1 + '/' + p.rrTp2 + ' · ' + [p.useEma && 'EMA', p.useRev && 'Dip', p.useBrk && 'Breakout'].filter(Boolean).join('+') + (p.useTrend ? ' · trend' : '') + (p.useHtf ? ' · grote tf' : '') + (p.letRun ? ' · winst laten lopen' : '') + (p.useCont ? ' · herinstap' : '') + (p.maxLossPct > 0 ? ' · max ' + p.maxLossPct + '% verlies' : '') + (p.quickBars > 0 ? ' · snel uit na ' + p.quickBars : '') + (p.usePatterns === false ? ' · zonder patroonfilter' : ''); }
 const pctStr = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
 
@@ -706,15 +713,15 @@ async function evaluateCoin(token){
   const results = [];
   for (let i = 0; i < grid.length; i++){
     const r = evalP(grid[i]);
-    if (r.train.n >= 8) results.push(Object.assign(r, { rank: Math.log(r.train.e) / (1 + 3 * Math.abs(r.train.dd)) }));
+    if (r.train.n >= 8) results.push(Object.assign(r, { rank: rankOf(r.train) }));
     if (i % 40 === 0) await new Promise(r2 => setImmediate(r2));   // keep the bot (stop-watch, ticks) responsive
   }
   results.sort((a, b) => b.rank - a.rank);
   // stage 2: on the 30 best, also try "let profits run" and "re-enter in the trend"
   const extra = [];
-  for (const r of results.slice(0, 30)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }, { maxLossPct: 0, quickBars: 0 }, { quickBars: 0 }, { maxLossPct: 3 }, { quickBars: 5 }, { usePatterns: false }]){
+  for (const r of results.slice(0, 30)) for (const v of [{ letRun: true }, { useCont: true }, { letRun: true, useCont: true }, { maxLossPct: 0, quickBars: 0 }, { maxLossPct: 3, lossMode: 'skip' }, { maxLossPct: 8, lossMode: 'skip' }, { quickBars: 3 }, { usePatterns: false }]){
     const r2 = evalP(Object.assign({}, r.p, v));
-    if (r2.train.n >= 8) extra.push(Object.assign(r2, { rank: Math.log(r2.train.e) / (1 + 3 * Math.abs(r2.train.dd)) }));
+    if (r2.train.n >= 8) extra.push(Object.assign(r2, { rank: rankOf(r2.train) }));
   }
   results.push(...extra);
   results.sort((a, b) => b.rank - a.rank);
@@ -1264,8 +1271,9 @@ async function handleCommand(text){
     try {
       const c = coin(mint); if (!c.ctx) c.ctx = await fetchBestPair(mint);
       const pre = await preBuyChecks(mint, { kind: 'strategie', source: 'EMA', liq: infoOf(c, mint).liquidityUsd, patterns: [] });
-      await tgSend('🧪 Koop-checks: ' + (pre.ok ? 'OK · ' + pre.notes.join(' · ') : 'GEWEIGERD · ' + pre.why) + (MARKET_FILTER ? ' · SOL-markt ' + (market.state || '?') : ''));
-      await live.dryRunBuy(mint, infoOf(c, mint));
+      await tgSend('🧪 Koop-checks: ' + (pre.ok ? 'OK · ' + pre.notes.join(' · ') : 'GEWEIGERD · ' + pre.why + ' → een echte koop zou nu NIET doorgaan (de rest hieronder is alleen een test van het koop-pad)') + (MARKET_FILTER ? ' · SOL-markt ' + (market.state || '?') : ''));
+      const keepConf = c.stakeConf; if (pre.ok) c.stakeConf = pre.stake;   // test with the same stake a real buy would use
+      try { await live.dryRunBuy(mint, infoOf(c, mint)); } finally { c.stakeConf = keepConf; }
     } catch (e){ await tgSend('🧪 Dry-run fout: ' + e.message); }
     return;
   }

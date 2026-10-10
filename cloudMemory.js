@@ -57,6 +57,12 @@ function describeKey(key, sym){
   return key;
 }
 
+/** Shrunk win rate (Beta prior worth 4 trades at the overall rate p0): is even mean + z·sd below p0? */
+function clearlyWorse(wins, n, p0, z){
+  const a = wins + 4 * p0, b = (n - wins) + 4 * (1 - p0), m = a / (a + b);
+  const sd = Math.sqrt(m * (1 - m) / (a + b + 1));
+  return m + (z == null ? 1.64 : z) * sd < p0;
+}
 function createCloud(o = {}){
   const env = o.env || process.env;
   const n = (k, f) => { const v = Number(env[k]); return env[k] != null && env[k] !== '' && Number.isFinite(v) ? v : f; };
@@ -66,8 +72,9 @@ function createCloud(o = {}){
     on: /^https:\/\/[a-z0-9-]+\.supabase\.(co|in)$/i.test(url) && key.length > 20,
     bot: String(env.BOT_NAME || 'bot').slice(0, 20),
     learn: !['0', 'false'].includes(String(env.CLOUD_LEARN || '1').toLowerCase()),
-    minN: Math.max(2, Math.floor(n('CLOUD_MIN_N', 5))),
-    maxWin: n('CLOUD_MAX_WINRATE', 40) / 100,
+    minN: Math.max(2, Math.floor(n('CLOUD_MIN_N', 8))),          // coin/wallet lessons need at least this many trades (general ones 2.5× more, min 20)
+    maxWin: n('CLOUD_MAX_WINRATE', 40) / 100,                    // never block a key that wins at least this often
+    z: Math.max(0.5, n('CLOUD_Z', 1.64)),                       // how sure the bot must be before it blocks (1.64 ≈ 95%)
     lessonDays: n('CLOUD_LESSON_DAYS', 14),
     keepBadDays: Math.max(1, n('CLOUD_KEEP_BAD_DAYS', 7)),
     tf: o.timeframe || env.TIMEFRAME || 'minute:5',
@@ -107,13 +114,21 @@ function createCloud(o = {}){
     loadedAt = now();
   }
 
-  /** Is this a pattern the bots have lost money on again and again? */
+  /** Is this a pattern the bots have lost money on again and again — clearly worse than the bot's normal win rate, not just bad luck?
+   *  Win rate is shrunk toward the bot's overall win rate (prior worth 4 trades); block only when even the optimistic
+   *  estimate (mean + z·sd) stays under the overall rate. With few trades a 4-out-of-6 loss streak is noise, not a lesson. */
+  function overallWinRate(){
+    let n = 0, w = 0;
+    for (const k of ['soort:oefen', 'soort:echt', 'soort:strategie', 'soort:papier']){ const l = lessons.get(k); if (l){ n += l.n; w += l.wins; } }
+    return n >= 20 ? Math.min(0.8, Math.max(0.2, w / n)) : 0.5;
+  }
   function badLesson(k){
     if (k.startsWith('soort:')) return null;
     const l = lessons.get(k);
     if (!l) return null;
-    const need = GENERAL(k) ? cfg.minN * 2 : cfg.minN;
+    const need = GENERAL(k) ? Math.ceil(cfg.minN * 2.5) : cfg.minN;
     if (l.n < need || l.pnl >= 0 || l.wins / l.n >= cfg.maxWin) return null;
+    if (!clearlyWorse(l.wins, l.n, overallWinRate(), cfg.z)) return null;
     if (now() - l.last > cfg.lessonDays * 86400000) return null;   // old lesson: give it a new chance
     return l;
   }
@@ -212,4 +227,4 @@ function createCloud(o = {}){
   return { cfg, check, record, refresh, cleanup, text, stats, keysFor, edge, patternsText, pushStatus, get lessons(){ return lessons; } };
 }
 
-module.exports = { createCloud, keysFor, hourNL, liqBucket, tfTag };
+module.exports = { createCloud, keysFor, hourNL, liqBucket, tfTag, clearlyWorse };
