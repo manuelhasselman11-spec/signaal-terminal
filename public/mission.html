@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEONDESK — mission control</title>
+<meta name="description" content="Mission control voor de paper-bot: 10 coins parallel, echte marktdata, harde kooi.">
+<script src="mission-engine.js"></script>
+<style>
+:root{
+  --frame:#e8389b; --frame-2:#b0237a; --panel:#0b0f1c; --panel-2:#121831; --line:#232b4d; --text:#e9ecff; --muted:#8a93c2;
+  --buy:#2fe38a; --sell:#ff4d6d; --warn:#ffd84d;
+  --chief:#ffd84d; --scan:#4dc3ff; --vet:#b6ff4d; --social:#ff7ad9; --size:#ff9f43; --fills:#2fe38a; --risk:#ff4d6d; --crawler:#a78bfa;
+  --mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", "SF Mono", Consolas, monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--frame);color:var(--text);font-family:var(--mono);font-size:13px}
+body{padding:10px;min-height:100vh;overflow-x:hidden}
+button,input,select{font-family:inherit;font-size:12px;color:var(--text)}
+button{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;padding:5px 9px;cursor:pointer}
+button:hover{border-color:var(--muted)} button:focus-visible,input:focus-visible,canvas:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--warn);outline-offset:1px}
+button.on{background:#1d2650;border-color:var(--scan)}
+.app{display:grid;gap:8px;grid-template-columns:repeat(12,minmax(0,1fr));max-width:1600px;margin:0 auto}
+.panel{background:var(--panel);border:1px solid var(--frame-2);border-radius:6px;padding:8px;min-width:0;position:relative}
+.ph{display:flex;align-items:center;gap:8px;justify-content:space-between;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;flex-wrap:wrap}
+.ph b{color:var(--text)}
+header.panel{grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 10px;background:#0a0d18}
+.brand{display:flex;align-items:center;gap:8px;font-weight:800;letter-spacing:.08em;font-size:17px;text-transform:uppercase}
+.nav{display:flex;gap:6px;flex-wrap:wrap} .nav button{font-size:11px;padding:3px 8px;background:transparent;color:var(--muted)}
+.hright{margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.pill{border:1px solid var(--line);border-radius:999px;padding:3px 9px;font-size:11px;background:var(--panel-2)}
+.badge{font-weight:800;border-radius:4px;padding:3px 8px;font-size:11px;letter-spacing:.08em}
+.badge.paper{background:#173a2a;color:var(--buy);border:1px solid var(--buy)} .badge.demo{background:#3a2a10;color:var(--warn);border:1px solid var(--warn)} .badge.live{background:#3a1018;color:var(--sell);border:1px solid var(--sell)}
+#kill{background:#3a1018;border-color:var(--sell);color:#ffd6dd;font-weight:800} #kill.armed{background:var(--sell);color:#fff}
+.agents{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 8px;cursor:pointer;min-width:0;transition:border-color .2s,transform .2s}
+.card:hover{transform:translateY(-1px)} .card .top{display:flex;align-items:center;gap:6px} .card .ic{width:12px;height:12px;border-radius:3px;flex:none}
+.card .nm{font-weight:800;letter-spacing:.06em} .card .chip{margin-left:auto;font-size:10px;border:1px solid var(--line);border-radius:3px;padding:1px 5px;color:var(--muted);white-space:nowrap}
+.card .sub{color:var(--muted);font-size:11px;margin:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .val{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar{height:4px;background:#1a2040;border-radius:2px;overflow:hidden;margin:4px 0} .bar i{display:block;height:100%;width:0;transition:width .4s}
+.card .th{font-size:11px;color:#c9cff5;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card.flash{border-color:var(--text)}
+.stage{grid-column:1/-1;padding:6px}
+.stage .ph button{font-size:10px;padding:2px 7px}
+#scene{width:100%;aspect-ratio:16/9;display:block;image-rendering:pixelated;border-radius:4px;background:#070a14;cursor:default}
+[hidden]{display:none!important}
+.wall{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}
+.tile{background:#080b16;border:1px solid var(--line);border-radius:5px;padding:4px;cursor:pointer;position:relative;min-width:0;transition:border-color .2s}
+.tile .tt{display:flex;gap:4px;align-items:center;font-size:11px;white-space:nowrap;overflow:hidden} .tile .tt b{overflow:hidden;text-overflow:ellipsis}
+.tile canvas{width:100%;height:120px;display:block}
+.tile .st{font-size:9px;border-radius:3px;padding:1px 4px;border:1px solid var(--line);margin-left:auto}
+.tile .ft{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);gap:4px;white-space:nowrap;overflow:hidden}
+.tile.fl-buy{box-shadow:0 0 0 2px var(--buy) inset} .tile.fl-sell{box-shadow:0 0 0 2px var(--sell) inset}
+.st.WATCH{color:var(--muted)} .st.SIGNAL{color:var(--warn);border-color:var(--warn)} .st.IN{color:var(--buy);border-color:var(--buy)} .st.EXIT{color:var(--sell);border-color:var(--sell)} .st.COOLDOWN{color:var(--scan)} .st.FOUT{color:#fff;background:var(--sell)} .st.PAUZE{color:var(--social);border-color:var(--social)}
+.balance{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:8px;align-items:stretch}
+#balChart{width:100%;height:150px;display:block}
+.bignum{font-size:30px;font-weight:800;color:var(--buy);text-align:right} .bignum.neg{color:var(--sell)}
+.cols{font-size:11px;color:var(--muted);text-align:right;line-height:1.6}
+.analysis{grid-column:1/span 7} .thresh{grid-column:8/-1}
+.opps{grid-column:1/span 6} .feed{grid-column:7/-1} .trades{grid-column:1/-1}
+.tabs{display:flex;gap:4px;flex-wrap:wrap} .tabs button{font-size:10px;padding:2px 7px}
+.an-grid{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:8px}
+#anChart{width:100%;height:300px;display:block}
+.kv{display:grid;grid-template-columns:minmax(80px,auto) minmax(0,1fr);gap:2px 8px;font-size:11px;align-content:start} .kv>span{overflow-wrap:anywhere;min-width:0} .kv>span:nth-child(odd){color:var(--muted)}
+.ok{color:var(--buy)} .bad{color:var(--sell)} .mut{color:var(--muted)} .warn{color:var(--warn)}
+table{width:100%;border-collapse:collapse;font-size:11px} th,td{padding:3px 5px;border-bottom:1px solid #161c38;text-align:left;white-space:nowrap} th{color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--panel)}
+.scroll{overflow:auto;max-height:280px}
+.BUY{color:var(--buy);font-weight:800} .SELL{color:var(--sell);font-weight:800}
+.th-row{display:grid;grid-template-columns:minmax(0,1fr) 92px 18px;gap:6px;align-items:center;font-size:11px;margin:2px 0}
+.th-row input{width:92px;background:#0f1430;border:1px solid var(--line);border-radius:3px;padding:2px 4px;text-align:right}
+.th-row input.err{border-color:var(--sell)}
+.lock{color:var(--muted);font-size:10px}
+#radar{width:120px;height:120px;display:block;margin:6px auto 0}
+.feedlist{max-height:280px;overflow:auto;font-size:11px} .feedlist div{padding:3px 0;border-bottom:1px solid #161c38;display:flex;gap:6px} .feedlist .t{color:var(--muted)}
+.overlay{position:fixed;inset:0;background:rgba(5,6,14,.82);z-index:20;display:none;align-items:center;justify-content:center;padding:14px}
+.overlay.open{display:flex}
+.ov-box{background:var(--panel);border:2px solid var(--frame);border-radius:8px;width:min(1200px,100%);max-height:100%;overflow:auto;padding:10px;transform-origin:center;transition:transform .25s ease,opacity .25s ease}
+.ov-box.from{transform:scale(.35);opacity:0}
+#bigChart{width:100%;height:min(62vh,520px);display:block}
+.drawer{position:fixed;top:0;right:0;height:100%;width:min(420px,100%);background:var(--panel);border-left:2px solid var(--frame);z-index:30;transform:translateX(105%);transition:transform .25s;padding:12px;overflow:auto}
+.drawer.open{transform:none}
+.foot{grid-column:1/-1;font-size:11px;color:#2b1030;display:flex;gap:12px;flex-wrap:wrap;justify-content:space-between;padding:2px 4px}
+.foot b{color:#1b0820}
+.empty{color:var(--muted);font-style:italic;padding:10px;text-align:center}
+.small{font-size:10px;color:var(--muted)}
+@media (max-width:1100px){ .analysis,.thresh,.opps,.feed{grid-column:1/-1} .wall{grid-template-columns:repeat(3,minmax(0,1fr))} }
+@media (max-width:700px){ body{padding:6px} .agents{grid-template-columns:repeat(2,minmax(0,1fr))} .wall{grid-template-columns:repeat(2,minmax(0,1fr))} .balance{grid-template-columns:1fr} .bignum,.cols{text-align:left} .an-grid{grid-template-columns:1fr} #anChart{height:240px} .brand{font-size:15px} .tile canvas{height:100px} }
+@media (prefers-reduced-motion:reduce){ *{transition:none!important;animation:none!important} }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="panel">
+    <div class="brand"><canvas id="logo" width="28" height="28" aria-hidden="true"></canvas><span id="brandName">NEONDESK</span></div>
+    <nav class="nav" aria-label="Navigatie">
+      <button data-go="opps">PICKS</button><button data-go="open">OPEN TRADES</button><button data-go="trades">TRADES</button><button data-go="thresh">THRESHOLDS</button>
+    </nav>
+    <div class="hright">
+      <span id="modeBadge" class="badge paper" title="Paper = nep-geld op echte marktdata">PAPER</span>
+      <span class="pill" id="dayPill">DAY –</span>
+      <span class="pill" id="utcPill">--:--:-- UTC</span>
+      <button id="kill" title="Stopt alle nieuwe entries en sluit alle paper-posities">KILL SWITCH</button>
+    </div>
+  </header>
+
+  <section class="agents" id="agents" aria-label="Agents"></section>
+
+  <section class="panel stage">
+    <div class="ph"><span><b id="stageTitle">KANTOOR</b> · <span id="stageSub">agents aan het werk</span></span>
+      <span class="tabs"><button id="vScene" class="on">KANTOOR</button><button id="vWall">CHART-MUUR (10)</button><button id="vSound" title="Geluid bij BUY/SELL">GELUID: UIT</button></span></div>
+    <canvas id="scene" width="960" height="540" tabindex="0" aria-label="Pixel-kantoor met agents; klik op een agent, coin of de muurgrafiek"></canvas>
+    <div class="wall" id="wall" hidden></div>
+  </section>
+
+  <section class="panel balance">
+    <div><div class="ph"><span><b id="balTitle">BALANCE · DAY –</b> · paper-kapitaal + gesloten P&amp;L</span><span id="balSub" class="small"></span></div><canvas id="balChart"></canvas></div>
+    <div><div class="bignum" id="balNum">–</div><div class="cols" id="pnlCols"></div></div>
+  </section>
+
+  <section class="panel analysis" id="analysis">
+    <div class="ph"><span><b id="anTitle">ANALYSIS</b> <span id="anSub"></span></span>
+      <span class="tabs" id="anTabs"><button data-tab="sig" class="on">SIGNALEN</button><button data-tab="vp">VOLUMEPROFIEL</button><button data-tab="flow">ORDERFLOW</button><button data-tab="tr">TRADES</button></span></div>
+    <div class="an-grid"><div><canvas id="anChart" tabindex="0" aria-label="Grote chart van de gekozen coin; klik voor volledig scherm"></canvas></div><div id="anSide" class="kv"></div></div>
+    <div id="anBottom" style="margin-top:6px"></div>
+  </section>
+
+  <section class="panel thresh" id="thresh">
+    <div class="ph"><span><b>THRESHOLDS</b> · instap-filters en kooi</span><span class="small" id="thMsg"></span></div>
+    <div id="thList"></div>
+    <div class="ph" style="margin-top:8px"><span><b>RUG-CHECKS</b> · <span id="rugCoin">–</span></span></div>
+    <div id="rugList" class="kv"></div>
+    <canvas id="radar" width="240" height="240" aria-hidden="true"></canvas>
+  </section>
+
+  <section class="panel opps" id="opps">
+    <div class="ph"><span><b>KANSEN</b> · gesorteerd op score</span>
+      <span class="tabs"><button data-f="all" class="on">ALLE</button><button data-f="sig">SIGNAAL</button><button data-f="pos">IN POSITIE</button><input id="oppSearch" placeholder="zoek coin" style="width:90px;background:#0f1430;border:1px solid var(--line);border-radius:3px;padding:2px 4px"></span></div>
+    <div class="scroll"><table><thead><tr><th>Coin</th><th>Score</th><th>Status</th><th>Kosten</th><th>Liq</th><th>Netto</th><th></th></tr></thead><tbody id="oppBody"></tbody></table></div>
+  </section>
+
+  <section class="panel feed" id="open">
+    <div class="ph"><span><b>TRADEFEED</b> · live</span><span class="small" id="lat"></span></div>
+    <div class="feedlist" id="feed"><div class="empty">nog geen gebeurtenissen</div></div>
+  </section>
+
+  <section class="panel trades" id="trades">
+    <div class="ph"><span><b>TRADETABEL</b> · alle trades, ook verliezers en schaduw</span><span class="tabs"><button data-tf="taken" class="on">GENOMEN</button><button data-tf="shadow">SCHADUW</button><button id="csv">CSV</button></span></div>
+    <div class="scroll"><table><thead><tr><th>Tijd UTC</th><th>Coin</th><th>BUY/SELL</th><th>Prijs (eff.)</th><th>Hoeveelh. SOL</th><th>Kosten SOL</th><th>Netto P&amp;L</th><th>Strategie</th><th>Reden</th><th>Tag</th><th>Status</th><th>Signature</th></tr></thead><tbody id="trBody"></tbody></table></div>
+  </section>
+
+  <div class="foot"><span id="audit"><b>Auditor:</b> –</span><span id="engineInfo"></span><span><b>Paper:</b> nep-geld op echte data · geen garanties · geen financieel advies</span></div>
+</div>
+
+<div class="overlay" id="ov" role="dialog" aria-modal="true" aria-label="Uitgebreide chart">
+  <div class="ov-box" id="ovBox">
+    <div class="ph"><span><b id="ovTitle">–</b> <span id="ovSub"></span></span><span class="tabs"><button id="ovPause">PAUZEER</button><button id="ovClose">SLUIT POSITIE</button><button id="ovBack">TERUG (Esc)</button></span></div>
+    <canvas id="bigChart"></canvas>
+    <div class="an-grid" style="margin-top:6px"><div id="ovBottom"></div><div id="ovSide" class="kv"></div></div>
+  </div>
+</div>
+<aside class="drawer" id="drawer" aria-label="Agent-details"><div class="ph"><span><b id="drTitle">–</b></span><button id="drClose">SLUIT</button></div><div id="drBody"></div></aside>
+
+<script>
+'use strict';
+/* =============================== CONFIG (alleen jij verruimt de kooi) =============================== */
+const CONFIG = {
+  name: 'NEONDESK',            // naam van het dashboard: verander hem hier
+  coins: 10, tfSec: 300, refreshSec: 90, gtPerMin: 8,
+  capitalSol: 1,               // nominaal paper-kapitaal (SOL); tier A = coinMaxPct van dit kapitaal
+  cage: { maxOpen: 10, maxExpPct: 40, coinMaxPct: 8, riskPct: 1.5, hourLossPct: 4, dayLossPct: 8, weekLossPct: 15, maxSlipPct: 8 },
+  thresholds: { min_liquidity_usd: 50000, min_volume_24h_usd: 50000, min_age_minutes: 60, max_round_trip_pct: 3, ev_block_after: 20, cooldown_min: 30 },
+  storeKey: 'neondesk.v1'
+};
+const DEMO = /[?&]demo=1/.test(location.search);
+const LAB = window.LABMOD && window.LABMOD.lab, VPL = window.LABMOD && window.LABMOD.vp;
+const AG = ['CHIEF', 'SCAN', 'VET', 'SOCIAL', 'SIZE', 'FILLS', 'RISK', 'CRAWLER'];
+const COL = { CHIEF: '#ffd84d', SCAN: '#4dc3ff', VET: '#b6ff4d', SOCIAL: '#ff7ad9', SIZE: '#ff9f43', FILLS: '#2fe38a', RISK: '#ff4d6d', CRAWLER: '#a78bfa' };
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pct = (x, d = 2) => x == null || !Number.isFinite(x) ? '–' : (x >= 0 ? '+' : '') + (x * 100).toFixed(d) + '%';
+const sol = x => x == null || !Number.isFinite(x) ? '–' : (x >= 0 ? '+' : '') + x.toFixed(Math.abs(x) < 0.01 ? 5 : 4);
+const usd = x => x == null || !Number.isFinite(x) ? '–' : '$' + (x >= 1e6 ? (x / 1e6).toFixed(2) + 'M' : x >= 1e3 ? (x / 1e3).toFixed(0) + 'k' : x.toFixed(0));
+const hm = s => new Date(s * 1000).toISOString().slice(11, 16);
+const nowS = () => DEMO ? SIM.now : Date.now() / 1000;
+function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (_){ return null; } }
+function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (_){} }
+document.title = CONFIG.name + ' — mission control'; $('brandName').textContent = CONFIG.name;
+if (DEMO){ $('modeBadge').className = 'badge demo'; $('modeBadge').textContent = 'DEMO · nepdata'; $('modeBadge').title = 'Demo-modus: verzonnen koersen om de UI te testen. Geen echte cijfers.'; }
+
+/* =============================== state =============================== */
+const S = {
+  coins: [], sel: null, solUsd: null, wallView: false, sound: false, oppFilter: 'all', trFilter: 'taken', tab: 'sig',
+  agents: Object.fromEntries(AG.map(a => [a, { status: 'start', thought: 'opstarten…', log: [], val: '–', sub: '', bar: 0 }])),
+  feed: [], pulses: [], lat: [], calls: 0, e429: 0, errs: 0, crawl: { found: 0, kept: 0, at: 0 }, backpressure: false, lastRender: 0
+};
+const store = lsGet(CONFIG.storeKey + (DEMO ? '.demo' : '')) || {};
+const TH = Object.assign({}, CONFIG.thresholds, store.th || {});
+const CAGE = Object.assign({}, CONFIG.cage, store.cage || {});
+for (const k of Object.keys(CONFIG.cage)) if (!(CAGE[k] <= CONFIG.cage[k])) CAGE[k] = CONFIG.cage[k];   // nooit ruimer dan de config
+
+/* =============================== Position Manager (ledger = één bron van waarheid) =============================== */
+const PM = {
+  start: store.start || Date.now(), killed: !!store.killed, open: store.open || {}, shadow: store.shadow || {}, closed: store.closed || [], seen: new Set(store.seen || []), blocks: store.blocks || {},
+  fixA(){ return 0.0004 / (CONFIG.capitalSol * CAGE.coinMaxPct / 100); }, feeSol: 0.0004,
+  save(){ lsSet(CONFIG.storeKey + (DEMO ? '.demo' : ''), { start: this.start, killed: this.killed, open: this.open, shadow: this.shadow, closed: this.closed.slice(-3000), seen: [...this.seen].slice(-30000), blocks: this.blocks, th: TH, cage: CAGE,
+    coins: DEMO ? null : S.coins.map(c => ({ mint: c.mint, pool: c.pool, sym: c.sym, liq: c.liq, vol24: c.vol24, created: c.created, cost: c.cost, costSrc: c.costSrc, paused: c.paused })) }); },
+  taken(){ return this.closed.filter(x => x.taken); },
+  lossSince(a, b){ return -this.closed.filter(x => x.taken && x.exitTime > a && x.exitTime <= b).reduce((s, x) => s + x.pnl, 0); },
+  openAt(T){ return Object.values(this.open).concat(this.closed.filter(x => x.taken && x.t <= T && x.exitTime > T)); },
+  ev(strat){ const r = this.closed.filter(x => x.strat === strat); if (r.length < TH.ev_block_after) return null; return r.reduce((s, x) => s + x.ret, 0) / r.length; },
+  admit(t, c){
+    const T = t.t, cap = CONFIG.capitalSol, open = this.openAt(T), exp = open.reduce((s, p) => s + p.size, 0);
+    if (this.killed) return 'kill switch';
+    if (c.paused) return 'coin gepauzeerd (jij)';
+    if (S.backpressure) return 'backpressure: te druk, geen nieuwe entries';
+    if (open.length >= CAGE.maxOpen) return 'max ' + CAGE.maxOpen + ' posities';
+    if (exp + t.size > cap * CAGE.maxExpPct / 100 + 1e-9) return 'max blootstelling ' + CAGE.maxExpPct + '%';
+    if (open.some(p => p.mint === c.mint)) return 'al in deze coin';
+    if (t.size > cap * CAGE.coinMaxPct / 100 + 1e-9) return 'max ' + CAGE.coinMaxPct + '% per coin';
+    if (t.side * 100 > CAGE.maxSlipPct) return 'slippage > ' + CAGE.maxSlipPct + '%';
+    if (this.lossSince(T - 3600, T) >= cap * CAGE.hourLossPct / 100) return 'uurverlies ≥ ' + CAGE.hourLossPct + '%';
+    if (this.lossSince(T - 86400, T) >= cap * CAGE.dayLossPct / 100) return 'dagverlies ≥ ' + CAGE.dayLossPct + '%';
+    if (this.lossSince(T - 7 * 86400, T) >= cap * CAGE.weekLossPct / 100) return 'weekverlies ≥ ' + CAGE.weekLossPct + '%';
+    const ev = this.ev(t.strat); if (ev != null && ev < 0) return 'EV < 0 na kosten (' + pct(ev) + ')';
+    if (t.size > 0 && this.feeSol / t.size > 0.04) return 'te klein: vaste kosten > 4%';
+    return null;
+  },
+  // exits FIRST, then entries (an exit is never delayed by entries or backpressure)
+  process(c, trades, formingTime){
+    const byKey = new Map(trades.map(t => [t.strat + ':' + c.mint + ':' + t.t, t])), out = { buys: 0, sells: 0 };
+    for (const book of [this.open, this.shadow]) for (const [k, p] of Object.entries(book)){
+      if (p.mint !== c.mint) continue;
+      const t = byKey.get(k);
+      if (!t) continue;
+      if (!t.open && t.exitTime != null && t.exitTime <= formingTime){ this.close(book, k, p, t, c); if (book === this.open) out.sells++; }
+    }
+    const prev = c.prevForming;
+    for (const t of trades.slice().sort((a, b) => a.t - b.t)){
+      const k = t.strat + ':' + c.mint + ':' + t.t;
+      if (this.seen.has(k) || t.t - CONFIG.tfSec < c.fwdFrom) continue;
+      if (t.failed){ this.seen.add(k); event('FAIL', c, { strat: t.strat, why: 'tx mislukt (paper, 5%)' }); continue; }
+      if (t.fillT == null || (prev != null && t.fillT < prev)) { this.seen.add(k); continue; }   // never fill in the past
+      if (!t.open) { this.seen.add(k); continue; }   // cannot happen with honest fills; never count it
+      this.seen.add(k);
+      const side = Math.max(0, ((t.costPct || 0) - c.cost / 100 - this.fixA()) / 2);
+      const rec = { key: k, mint: c.mint, sym: c.sym, strat: t.strat, why: t.why, tier: t.tier || 'B', t: t.t, fillT: t.fillT, entry: t.e, size: t.size || 0, side, cost: c.cost, costPct: t.costPct, risk: t.risk, regime: t.regime, seenAt: Date.now() };
+      rec.side = side; const why = this.admit(Object.assign({}, t, { side }), c);
+      if (why){ rec.skip = why; this.shadow[k] = rec; this.blocks[why.replace(/[\d.,]+%?/g, '#')] = (this.blocks[why.replace(/[\d.,]+%?/g, '#')] || 0) + 1; S.agents.RISK.lastBlock = why; event('SKIP', c, rec); }
+      else { this.open[k] = rec; out.buys++; event('BUY', c, rec); }
+    }
+    c.prevForming = formingTime;
+    this.save();
+    return out;
+  },
+  close(book, k, p, t, c, manualPx){
+    const g = manualPx != null ? manualPx * (1 - p.side) / p.entry - 1 : (t.retP != null ? t.retP : t.ret) + p.cost / 100;
+    const retP = g - p.cost / 100, pnl = p.size * retP - this.feeSol, fees = p.size * (p.cost / 100 + 2 * p.side) + this.feeSol;
+    const rec = Object.assign({}, p, { taken: book === this.open, exitTime: manualPx != null ? nowS() : t.exitTime, exitEff: p.entry * (1 + g), gross: g, retP, ret: retP - this.fixA(), pnl, fees,
+      exit: manualPx != null ? 'handmatig' : t.exit, rug: !!(t && t.rug), bars: t ? t.bars : null });
+    delete book[k]; this.closed.push(rec); if (this.closed.length > 3000) this.closed.splice(0, this.closed.length - 3000);
+    LAB.classify(this.closed.filter(x => x.strat === rec.strat).slice(-201));
+    event(rec.taken ? 'SELL' : 'SHADOWX', c, rec);
+    return rec;
+  },
+  manualClose(c){
+    const last = c.bars[c.bars.length - 1]; if (!last) return 0; let n = 0;
+    for (const [k, p] of Object.entries(this.open)) if (p.mint === c.mint){ this.close(this.open, k, p, null, c, last.close); n++; }
+    this.save(); return n;
+  }
+};
+
+/* =============================== events, feed, pulses =============================== */
+const ROUTE = { BUY: ['SCAN', 'VET', 'CHIEF', 'SIZE', 'RISK', 'FILLS'], SELL: ['RISK', 'FILLS', 'CHIEF'], SKIP: ['CHIEF', 'RISK'], FAIL: ['FILLS', 'RISK'], SHADOWX: ['RISK', 'CHIEF'], CRAWL: ['CRAWLER', 'SCAN'], VET: ['SCAN', 'VET'], ERR: ['SCAN', 'RISK'] };
+function event(type, c, r){
+  const e = { type, at: nowS(), sym: c ? c.sym : '', mint: c ? c.mint : '', r: r || {} };
+  S.feed.unshift(e); if (S.feed.length > 300) S.feed.pop();
+  const path = ROUTE[type] || []; path.slice(1).forEach((a, i) => S.pulses.push({ a: path[i], b: a, t0: performance.now() + i * 180, col: type === 'BUY' ? '#2fe38a' : type === 'SELL' ? (r && r.pnl < 0 ? '#ff4d6d' : '#2fe38a') : COL[a] }));
+  if (type === 'BUY'){ say('CHIEF', 'BUY ' + e.sym + ': ' + (r.strat || '')); say('SIZE', (r.size || 0).toFixed(3) + ' SOL · tier ' + r.tier); say('FILLS', 'paper-fill ' + e.sym); flashTile(c, 'buy'); beep(880); }
+  if (type === 'SELL'){ say('FILLS', 'SELL ' + e.sym + ' ' + pct(r.retP)); say('CHIEF', (r.pnl >= 0 ? 'winst ' : 'verlies ') + e.sym + ' (' + r.exit + ')'); flashTile(c, 'sell'); beep(r.pnl >= 0 ? 660 : 330); }
+  if (type === 'SKIP') say('RISK', 'geblokt: ' + r.skip);
+  S.dirty = true;
+}
+function say(a, txt){ const g = S.agents[a]; g.thought = txt; g.log.unshift({ at: nowS(), txt }); if (g.log.length > 40) g.log.pop(); g.flash = performance.now(); }
+let AC = null; function beep(f){ if (!S.sound) return; try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); const o = AC.createOscillator(), g = AC.createGain(); o.frequency.value = f; g.gain.value = 0.04; o.connect(g); g.connect(AC.destination); o.start(); o.stop(AC.currentTime + 0.12); } catch (_){} }
+
+/* =============================== data: gedeelde rate limiter + fetch met timeout =============================== */
+const RL = { calls: [], queue: [] };
+function gt(url, prio){   // prio 0 = coins met een open positie eerst
+  return new Promise((res, rej) => { RL.queue.push({ url, prio: prio || 1, res, rej, at: Date.now() }); RL.queue.sort((a, b) => a.prio - b.prio || a.at - b.at); pump(); });
+}
+function pump(){
+  const now = Date.now(); RL.calls = RL.calls.filter(t => now - t < 60000);
+  S.backpressure = RL.queue.length > 14;   // te veel achterstand: geen nieuwe entries tot het weer rustig is
+  while (RL.queue.length && RL.calls.length < CONFIG.gtPerMin){
+    const j = RL.queue.shift(); RL.calls.push(Date.now()); S.calls++;
+    const ac = new AbortController(), to = setTimeout(() => ac.abort(), 15000), t0 = performance.now();
+    fetch(j.url, { signal: ac.signal, headers: { accept: 'application/json' } }).then(r => { if (r.status === 429){ S.e429++; throw new Error('429 te veel verzoeken'); } if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(d => { S.lat.push(performance.now() - t0); if (S.lat.length > 100) S.lat.shift(); j.res(d); }).catch(e => j.rej(e)).finally(() => clearTimeout(to));
+  }
+  if (RL.queue.length) setTimeout(pump, 1500);
+}
+const GT = 'https://api.geckoterminal.com/api/v2/networks/solana';
+async function jupRoundTrip(mint){
+  const SOLM = 'So11111111111111111111111111111111111111112', amt = Math.round(0.08 * 1e9);
+  const q = async (a, b, n) => { const ac = new AbortController(), to = setTimeout(() => ac.abort(), 10000); try { const r = await fetch('https://lite-api.jup.ag/swap/v1/quote?inputMint=' + a + '&outputMint=' + b + '&amount=' + n + '&slippageBps=300', { signal: ac.signal }); if (!r.ok) throw new Error('jup ' + r.status); return await r.json(); } finally { clearTimeout(to); } };
+  const a = await q(SOLM, mint, amt); const b = await q(mint, SOLM, a.outAmount);
+  return (1 - Number(b.outAmount) / amt) * 100;
+}
+async function crawl(){
+  say('CRAWLER', 'zoekt trending pools…'); event('CRAWL', null, {});
+  const d = await gt(GT + '/trending_pools?page=1', 1), list = [];
+  for (const p of (d.data || [])){
+    const a = p.attributes || {}, base = (((p.relationships || {}).base_token || {}).data || {}).id || '', mint = base.replace(/^solana_/, '');
+    if (!mint || mint.startsWith('So111111')) continue;
+    list.push({ pool: a.address, mint, sym: String(a.name || '?').split(' / ')[0].slice(0, 12), liq: Number(a.reserve_in_usd) || 0, vol24: Number((a.volume_usd || {}).h24) || 0, created: a.pool_created_at, dex: (((p.relationships || {}).dex || {}).data || {}).id || '' });
+  }
+  S.crawl = { found: list.length, kept: 0, at: Date.now() };
+  say('CRAWLER', list.length + ' tokens gevonden');
+  return list;
+}
+async function pickCoins(){
+  const saved = (store.coins || []).filter(Boolean);
+  let cand = [];
+  try { cand = await crawl(); } catch (e){ say('CRAWLER', 'fout: ' + e.message); }
+  const age = c => c.created ? (Date.now() - Date.parse(c.created)) / 60000 : 0;
+  const keep = saved.filter(c => S.coins.length < CONFIG.coins).map(c => Object.assign({}, c));
+  const out = keep.slice(0, CONFIG.coins);
+  for (const c of cand){
+    if (out.length >= CONFIG.coins) break;
+    if (out.some(x => x.mint === c.mint)) continue;
+    const why = c.liq < TH.min_liquidity_usd ? 'liquiditeit ' + usd(c.liq) : c.vol24 < TH.min_volume_24h_usd ? 'volume ' + usd(c.vol24) : age(c) < TH.min_age_minutes ? 'te jong (' + Math.round(age(c)) + ' min)' : null;
+    if (why){ say('VET', 'afgekeurd ' + c.sym + ': ' + why); continue; }
+    let cost = null, src = 'gemeten (Jupiter)';
+    try { cost = await jupRoundTrip(c.mint); } catch (e){ cost = 2.4; src = 'geschat (Jupiter niet bereikbaar)'; }
+    if (cost > TH.max_round_trip_pct){ say('VET', 'afgekeurd ' + c.sym + ': rondje ' + cost.toFixed(2) + '%'); event('VET', null, {}); continue; }
+    say('VET', 'goed: ' + c.sym + ' (rondje ' + cost.toFixed(2) + '%)');
+    out.push(Object.assign(c, { cost: Math.max(0, cost), costSrc: src }));
+  }
+  S.crawl.kept = out.length;
+  return out;
+}
+
+/* =============================== per-coin worker (geïsoleerd, eigen fouten, eigen circuit breaker) =============================== */
+function makeCoin(c){ return Object.assign({ bars: [], looks: [], fwdFrom: null, prevForming: null, state: 'WATCH', err: 0, breakerUntil: 0, lastLook: 0, explain: [], score: null, P: null, mtrades: [], paused: false }, c); }
+function mergeBars(c, nb){
+  const m = new Map(c.bars.map(b => [b.time, b])); nb.forEach(b => m.set(b.time, b));
+  c.bars = [...m.values()].sort((a, b) => a.time - b.time); if (c.bars.length > 1500) c.bars = c.bars.slice(-1000);
+}
+async function lookCoin(c){
+  if (Date.now() < c.breakerUntil){ c.state = 'FOUT'; return; }
+  const t0 = performance.now();
+  try {
+    let nb;
+    if (DEMO){ if (c._fail) throw new Error('test: coin crasht'); nb = SIM.bars(c); }
+    else { const d = await gt(GT + '/pools/' + c.pool + '/ohlcv/minute?aggregate=5&limit=300&currency=usd', Object.values(PM.open).some(p => p.mint === c.mint) ? 0 : 1);
+      nb = ((((d || {}).data || {}).attributes || {}).ohlcv_list || []).map(r => ({ time: r[0], open: +r[1], high: +r[2], low: +r[3], close: +r[4], volume: +r[5] })).sort((a, b) => a.time - b.time); }
+    if (!nb.length) throw new Error('geen candles');
+    mergeBars(c, nb);
+    const forming = c.bars[c.bars.length - 1].time;
+    if (c.fwdFrom == null) c.fwdFrom = forming;
+    if (c.looks[c.looks.length - 1] !== forming) c.looks.push(forming); if (c.looks.length > 600) c.looks.splice(0, c.looks.length - 600);
+    const q = Object.assign({}, LAB.LAB_DEFAULTS, { capital: CONFIG.capitalSol, coinMaxPct: CAGE.coinMaxPct, riskPct: CAGE.riskPct, maxOpen: CAGE.maxOpen, solUsd: S.solUsd || 110, vp: 1, runner: 1 });
+    const r = LAB.labRunCoin(c.bars, q, { cost: c.cost, liq: c.liq, created: c.created, key: c.mint, looks: c.looks });
+    c.P = r.P; c.explain = c.bars.length > 62 ? LAB.labExplain(r.P, q, c.bars.length - 2) : [];
+    c.chain = r.trades;
+    const o = PM.process(c, r.trades, forming);
+    const sig = c.explain.filter(x => x.ok);
+    const hasPos = Object.values(PM.open).some(p => p.mint === c.mint);
+    const lastClose = PM.closed.filter(x => x.mint === c.mint && x.taken).map(x => x.exitTime).sort((a, b) => b - a)[0];
+    c.state = c.paused ? 'PAUZE' : hasPos ? 'IN' : o.sells ? 'EXIT' : sig.length ? 'SIGNAL' : lastClose && nowS() - lastClose < TH.cooldown_min * 60 ? 'COOLDOWN' : 'WATCH';
+    const risk = r.P.risk(c.bars.length - 2);
+    c.score = Math.max(0, Math.min(100, Math.round(100 - risk - 8 * (c.cost || 0) + 12 * sig.length)));
+    c.risk = risk; c.err = 0; c.lastLook = Date.now(); c.lastMs = performance.now() - t0;
+    say('SCAN', c.sym + ': ' + (sig.length ? sig.length + ' signaal (' + sig[0].strat + ')' : 'geen signaal'));
+  } catch (e){
+    c.err++; S.errs++; c.lastErr = e.message; event('ERR', c, { why: e.message });
+    if (c.err >= 3){ c.breakerUntil = Date.now() + 5 * 60000; c.state = 'FOUT'; say('RISK', 'circuit breaker ' + c.sym + ' (5 min)'); }
+  }
+  S.dirty = true;
+}
+function startWorker(c, k){
+  const loop = async () => { if (S.stopped) return; await lookCoin(c); c.timer = setTimeout(loop, DEMO ? SIM.stepMs : (CONFIG.refreshSec * 1000 + Math.random() * 8000)); };
+  c.timer = setTimeout(loop, DEMO ? 300 + k * 120 : 1500 + k * 900);
+}
+
+/* =============================== DEMO-data (alleen met ?demo=1, duidelijk gemarkeerd) =============================== */
+const SIM = { now: Math.floor(Date.now() / 1000 / 300) * 300, stepMs: 900, seed: 7,
+  rnd(){ this.seed = (this.seed * 16807) % 2147483647; return this.seed / 2147483647; },
+  init(c, k){ c._p = 0.001 * (1 + k); c._b = []; for (let i = 0; i < 400; i++) this.push(c); },
+  push(c){ const last = c._b[c._b.length - 1], t = last ? last.time + 300 : this.now - 400 * 300; const o = last ? last.close : c._p;
+    const d = Math.sin(c._b.length / (9 + c._k)) * 0.012 + (this.rnd() - 0.5) * 0.03 + (this.rnd() < 0.02 ? 0.12 : 0) - (this.rnd() < 0.015 ? 0.15 : 0);
+    const cl = Math.max(1e-9, o * (1 + d)), h = Math.max(o, cl) * (1 + this.rnd() * 0.012), l = Math.min(o, cl) * (1 - this.rnd() * 0.012);
+    c._b.push({ time: t, open: o, high: h, low: l, close: cl, volume: 2000 + this.rnd() * 9000 * (1 + Math.abs(d) * 30) }); },
+  bars(c){ this.push(c); const b = c._b[c._b.length - 1]; this.now = Math.max(this.now, b.time); return c._b.slice(-300); }
+};
+
+/* =============================== canvas-chart (eigen renderer) =============================== */
+function fitCanvas(cv){ const r = cv.getBoundingClientRect(), d = Math.min(2, window.devicePixelRatio || 1); const w = Math.max(10, Math.round(r.width * d)), h = Math.max(10, Math.round(r.height * d)); if (cv.width !== w || cv.height !== h){ cv.width = w; cv.height = h; } return { w, h, d }; }
+function drawChart(cv, c, o){
+  if (!cv || !cv.isConnected) return; const { w, h, d } = fitCanvas(cv), x = cv.getContext('2d');
+  x.fillStyle = '#070a14'; x.fillRect(0, 0, w, h);
+  const B = (c && c.bars) || [];
+  if (B.length < 2){ x.fillStyle = '#8a93c2'; x.font = 11 * d + 'px monospace'; x.fillText(DEMO ? 'laden…' : 'geen data (nog)', 8 * d, h / 2); return; }
+  const n = Math.min(B.length, o.n || 90), V = B.slice(-n), padR = (o.axis ? 56 : 4) * d, top = 6 * d, volH = h * 0.18, ph = h - volH - top - 4 * d, cw = (w - padR) / n;
+  let lo = Infinity, hi = -Infinity, vmax = 0; V.forEach(b => { lo = Math.min(lo, b.low); hi = Math.max(hi, b.high); vmax = Math.max(vmax, b.volume); });
+  (o.lines || []).forEach(l => { if (l.px > 0 && l.px < hi * 1.5 && l.px > lo / 1.5){ lo = Math.min(lo, l.px); hi = Math.max(hi, l.px); } });
+  const pad = (hi - lo) * 0.08 || hi * 0.01; lo -= pad; hi += pad; const Y = p => top + (hi - p) / (hi - lo) * ph;
+  x.strokeStyle = '#141a33'; x.lineWidth = 1; for (let g = 1; g < 4; g++){ const yy = Math.round(top + ph * g / 4) + 0.5; x.beginPath(); x.moveTo(0, yy); x.lineTo(w - padR, yy); x.stroke(); }
+  V.forEach((b, i) => { const cx = i * cw + cw / 2, up = b.close >= b.open; x.strokeStyle = x.fillStyle = up ? '#2fe38a' : '#ff4d6d';
+    x.beginPath(); x.moveTo(Math.round(cx) + 0.5, Y(b.high)); x.lineTo(Math.round(cx) + 0.5, Y(b.low)); x.stroke();
+    const y1 = Y(Math.max(b.open, b.close)), y2 = Y(Math.min(b.open, b.close)); x.fillRect(Math.round(cx - Math.max(1, cw * 0.32)), y1, Math.max(1, Math.round(cw * 0.64)), Math.max(1, y2 - y1));
+    x.globalAlpha = 0.35; x.fillRect(Math.round(cx - Math.max(1, cw * 0.32)), h - (b.volume / (vmax || 1)) * volH, Math.max(1, Math.round(cw * 0.64)), (b.volume / (vmax || 1)) * volH); x.globalAlpha = 1; });
+  (o.lines || []).forEach(l => { if (!(l.px > lo && l.px < hi)) return; x.strokeStyle = l.col; x.setLineDash(l.dash ? [4 * d, 3 * d] : []); x.beginPath(); x.moveTo(0, Math.round(Y(l.px)) + 0.5); x.lineTo(w - padR, Math.round(Y(l.px)) + 0.5); x.stroke(); x.setLineDash([]);
+    if (o.axis){ x.fillStyle = l.col; x.font = 10 * d + 'px monospace'; x.fillText(l.label, w - padR + 3 * d, Y(l.px) + 3 * d); } });
+  const idx = t => { if (t < V[0].time || t > V[n - 1].time + 300) return -1; let lo = 0, hi = n - 1; while (lo < hi){ const m = (lo + hi + 1) >> 1; if (V[m].time <= t) lo = m; else hi = m - 1; } return lo; };   // gaps-safe
+  (o.markers || []).forEach(m => { const i = idx(m.t); if (i < 0 || i >= n) return; const b = V[i], cx = i * cw + cw / 2, s = Math.max(4 * d, Math.min(8 * d, cw * 0.9));
+    x.fillStyle = m.buy ? '#2fe38a' : '#ff4d6d'; x.beginPath();
+    if (m.buy){ const yy = Y(b.low) + 3 * d; x.moveTo(cx, yy); x.lineTo(cx - s / 2, yy + s); x.lineTo(cx + s / 2, yy + s); } else { const yy = Y(b.high) - 3 * d; x.moveTo(cx, yy); x.lineTo(cx - s / 2, yy - s); x.lineTo(cx + s / 2, yy - s); }
+    x.closePath(); x.fill(); if (m.shadow){ x.strokeStyle = '#070a14'; x.lineWidth = 1; x.stroke(); } });
+  if (o.axis){ x.fillStyle = '#8a93c2'; x.font = 10 * d + 'px monospace'; [hi, (hi + lo) / 2, lo].forEach(p => x.fillText(fmtPx(p), w - padR + 3 * d, Y(p) + 3 * d)); x.fillText(hm(V[0].time), 2 * d, h - 2 * d); x.fillText(hm(V[n - 1].time) + ' UTC', w - padR - 70 * d, h - 2 * d); }
+}
+function fmtPx(p){ return p >= 1 ? p.toFixed(3) : p >= 0.01 ? p.toFixed(5) : p.toPrecision(4); }
+function markersFor(c, withShadow){
+  const m = [], all = Object.values(PM.open).concat(PM.closed, withShadow ? Object.values(PM.shadow) : []);
+  all.filter(x => x.mint === c.mint && (x.taken !== false || withShadow) && (withShadow || !x.skip)).forEach(x => { m.push({ t: x.fillT, buy: true, shadow: !!x.skip }); if (x.exitTime) m.push({ t: Math.floor((x.exitTime - 1) / 300) * 300, buy: false, shadow: !!x.skip }); });
+  return m;
+}
+function linesFor(c, vp){
+  const l = []; Object.values(PM.open).filter(p => p.mint === c.mint).forEach(p => l.push({ px: p.entry, col: '#ffd84d', dash: true, label: 'entry' }));
+  if (vp && c.P && c.P.vp){ const s = c.P.vp[c.P.vp.length - 1]; if (s){ l.push({ px: s.poc, col: '#a78bfa', label: 'POC' }, { px: s.vah, col: '#4dc3ff', dash: true, label: 'VAH' }, { px: s.val, col: '#4dc3ff', dash: true, label: 'VAL' }); } }
+  return l;
+}
+
+/* =============================== UI: agent-kaarten =============================== */
+const SUBS = { CHIEF: 'laatste pick', SCAN: 'scant 10 coins', VET: 'keuring kosten/liq', SOCIAL: 'sociale buzz', SIZE: 'positiegrootte', FILLS: 'uitgevoerd (paper)', RISK: 'harde kooi', CRAWLER: 'nieuwe tokens' };
+$('agents').innerHTML = AG.map(a => '<div class="card" tabindex="0" data-agent="' + a + '" style="border-top:2px solid ' + COL[a] + '"><div class="top"><span class="ic" style="background:' + COL[a] + '"></span><span class="nm">' + a + '</span><span class="chip" id="ch-' + a + '">–</span></div><div class="sub" id="sb-' + a + '">' + SUBS[a] + '</div><div class="val" id="vl-' + a + '">–</div><div class="bar"><i id="br-' + a + '" style="background:' + COL[a] + '"></i></div><div class="th" id="tt-' + a + '">“opstarten…”</div></div>').join('');
+function agentStats(){
+  const A = S.agents, coins = S.coins, open = Object.values(PM.open), tk = PM.taken(), today = Math.floor(nowS() / 86400) * 86400, best = coins.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  const looked = coins.filter(c => Date.now() - c.lastLook < CONFIG.refreshSec * 1500 || DEMO).length;
+  const set = (a, chip, val, bar, sub) => { A[a].chip = chip; A[a].val = val; A[a].bar = bar; if (sub) A[a].sub = sub; };
+  set('CHIEF', best ? best.state : '–', best ? 'PICK → ' + best.sym + ' · ' + (best.score ?? '–') : 'nog geen pick', best ? (best.score || 0) / 100 : 0);
+  set('SCAN', looked + '/' + coins.length, 'fetch ' + (S.lat.length ? Math.round(S.lat.reduce((s, x) => s + x, 0) / S.lat.length) + ' ms' : '–') + ' · ' + S.calls + ' calls', coins.length ? looked / coins.length : 0);
+  const vetted = coins.filter(c => c.cost != null); set('VET', vetted.length + ' goed', 'mediaan rondje ' + (vetted.length ? vetted.map(c => c.cost).sort((a, b) => a - b)[Math.floor(vetted.length / 2)].toFixed(2) + '%' : '–'), Math.min(1, vetted.length / CONFIG.coins));
+  set('SOCIAL', 'GEEN DATA', 'geen sociale bron gekoppeld', 0); A.SOCIAL.thought = 'geen data — ik verzin geen buzz';
+  const lastOpen = open.slice().sort((a, b) => b.t - a.t)[0]; set('SIZE', lastOpen ? 'tier ' + lastOpen.tier : '–', lastOpen ? lastOpen.size.toFixed(3) + ' SOL' + (S.solUsd ? ' ($' + (lastOpen.size * S.solUsd).toFixed(2) + ')' : '') : 'geen positie', lastOpen ? lastOpen.size / (CONFIG.capitalSol * CAGE.coinMaxPct / 100) : 0);
+  const fToday = tk.filter(x => x.exitTime >= today); set('FILLS', fToday.length + ' vandaag', open.length + ' open · vol ' + fToday.reduce((s, x) => s + x.size, 0).toFixed(3) + ' SOL', Math.min(1, fToday.length / 20));
+  const dl = PM.lossSince(nowS() - 86400, nowS()); set('RISK', PM.killed ? 'KILL' : open.length + '/' + CAGE.maxOpen, 'dagverlies ' + (dl > 0 ? dl.toFixed(4) : '0') + ' / ' + (CONFIG.capitalSol * CAGE.dayLossPct / 100).toFixed(2) + ' SOL', Math.min(1, Math.max(0, dl) / (CONFIG.capitalSol * CAGE.dayLossPct / 100)));
+  set('CRAWLER', S.crawl.found + ' gevonden', S.crawl.kept + ' gekozen · ' + (S.crawl.at ? hm(S.crawl.at / 1000) + ' UTC' : '–'), Math.min(1, S.crawl.kept / CONFIG.coins));
+  if (S.backpressure) A.RISK.thought = 'backpressure: even geen nieuwe entries';
+}
+function renderAgents(){
+  agentStats();
+  AG.forEach(a => { const g = S.agents[a]; $('ch-' + a).textContent = g.chip || '–'; $('vl-' + a).textContent = g.val; $('br-' + a).style.width = Math.round(Math.max(0, Math.min(1, g.bar || 0)) * 100) + '%'; $('tt-' + a).textContent = '“' + g.thought + '”';
+    const card = document.querySelector('[data-agent="' + a + '"]'); card.classList.toggle('flash', g.flash && performance.now() - g.flash < 900); });
+}
+
+/* =============================== UI: scène (pixel-kantoor) =============================== */
+const SC = { cv: $('scene'), hits: [], t: 0 };
+const DESKS = [['CHIEF', 300, 300], ['SCAN', 430, 300], ['VET', 560, 300], ['SIZE', 300, 440], ['FILLS', 430, 440], ['RISK', 560, 440]];
+const NODES = { CHIEF: [330, 95], SCAN: [230, 70], VET: [430, 70], SIZE: [250, 160], FILLS: [400, 165], RISK: [480, 120], CRAWLER: [170, 120], SOCIAL: [520, 60] };
+function px(x, c, a, b, w, h){ x.fillStyle = c; x.fillRect(Math.round(a), Math.round(b), Math.round(w), Math.round(h)); }
+function drawScene(now){
+  const cv = SC.cv, x = cv.getContext('2d'); x.imageSmoothingEnabled = false; SC.hits = []; const W = 960, H = 540; SC.t = now / 1000;
+  px(x, '#070a14', 0, 0, W, H);
+  for (let i = 0; i < 16; i++) for (let j = 0; j < 9; j++){ const cx = 480 + (i - j) * 40, cy = 250 + (i + j) * 20 - 80; if (cy < 230) continue; x.fillStyle = (i + j) % 2 ? '#0c1124' : '#0e142b'; x.beginPath(); x.moveTo(cx, cy); x.lineTo(cx + 40, cy + 20); x.lineTo(cx, cy + 40); x.lineTo(cx - 40, cy + 20); x.fill(); }
+  px(x, '#0d1226', 120, 20, 560, 200); px(x, '#232b4d', 120, 218, 560, 3);
+  // muurgrafiek = gekozen coin, echt
+  const c = S.sel; px(x, '#05070f', 150, 35, 380, 170); px(x, '#232b4d', 148, 33, 384, 2);
+  if (c && c.bars.length > 2){ const V = c.bars.slice(-60); let lo = Infinity, hi = -Infinity; V.forEach(b => { lo = Math.min(lo, b.low); hi = Math.max(hi, b.high); }); const Y = p => 45 + (hi - p) / ((hi - lo) || 1) * 150;
+    V.forEach((b, i) => { const xx = 155 + i * 6.2; px(x, b.close >= b.open ? '#2fe38a' : '#ff4d6d', xx + 2, Y(b.high), 1, Math.max(1, Y(b.low) - Y(b.high))); px(x, b.close >= b.open ? '#2fe38a' : '#ff4d6d', xx, Y(Math.max(b.open, b.close)), 5, Math.max(1, Y(Math.min(b.open, b.close)) - Y(Math.max(b.open, b.close)))); });
+    x.fillStyle = '#e9ecff'; x.font = 'bold 12px monospace'; x.fillText(c.sym + ' · 5m · ' + (c.state || ''), 156, 30); }
+  else { x.fillStyle = '#8a93c2'; x.font = '12px monospace'; x.fillText('geen data', 300, 120); }
+  SC.hits.push({ x: 150, y: 35, w: 380, h: 170, act: () => openBig(S.sel) });
+  // netwerk van agents op de muur: pulsen bij echte gebeurtenissen
+  x.globalAlpha = 0.5; x.strokeStyle = '#3a4580'; x.lineWidth = 1; const keys = Object.keys(NODES);
+  keys.forEach((a, i) => keys.slice(i + 1).forEach(b => { if ((i + b.length) % 3) return; x.beginPath(); x.moveTo(...NODES[a]); x.lineTo(...NODES[b]); x.stroke(); })); x.globalAlpha = 1;
+  S.pulses = S.pulses.filter(p => now - p.t0 < 900);
+  S.pulses.forEach(p => { const k = (now - p.t0) / 700; if (k < 0) return; const A = NODES[p.a], B = NODES[p.b]; if (!A || !B) return; const q = Math.min(1, k); x.strokeStyle = p.col; x.lineWidth = 2; x.beginPath(); x.moveTo(A[0], A[1]); x.lineTo(A[0] + (B[0] - A[0]) * q, A[1] + (B[1] - A[1]) * q); x.stroke(); px(x, p.col, A[0] + (B[0] - A[0]) * q - 2, A[1] + (B[1] - A[1]) * q - 2, 5, 5); });
+  keys.forEach(a => { const [nx, ny] = NODES[a]; px(x, COL[a], nx - 3, ny - 3, 7, 7); });
+  // coin-avatars rechtsboven (top 6 kansen, eigen identicons)
+  const top6 = S.coins.slice().sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 6);
+  top6.forEach((cc, i) => { const ax = 560 + i * 62, ay = 50; const hue = [...cc.mint].reduce((s, ch) => s + ch.charCodeAt(0), 0) % 360;
+    x.fillStyle = 'hsl(' + hue + ',70%,45%)'; x.beginPath(); x.arc(ax + 24, ay + 24, 24, 0, 7); x.fill(); x.strokeStyle = cc === S.sel ? '#ffd84d' : cc.state === 'IN' ? '#2fe38a' : '#232b4d'; x.lineWidth = 3; x.stroke();
+    x.fillStyle = '#fff'; x.font = 'bold 12px monospace'; x.textAlign = 'center'; x.fillText(cc.sym.slice(0, 4).toUpperCase(), ax + 24, ay + 28); x.font = '10px monospace'; x.fillStyle = '#e9ecff'; x.fillText(cc.score ?? '–', ax + 24, ay + 62); x.textAlign = 'left';
+    SC.hits.push({ x: ax, y: ay, w: 48, h: 48, act: () => select(cc) }); });
+  if (!top6.length){ x.fillStyle = '#8a93c2'; x.font = '11px monospace'; x.fillText('geen kansen (nog geen data)', 600, 80); }
+  // props
+  const tm = S.coins.filter(c => c.bars.length > 13).map(c => [c, c.bars[c.bars.length - 1].close / c.bars[c.bars.length - 13].close - 1]).sort((a, b) => b[1] - a[1])[0];
+  const wob = Math.sin(SC.t * 3) * 2; px(x, '#d9dcf5', 820, 300 + wob, 14, 50); px(x, '#ff4d6d', 816, 340 + wob, 22, 10); px(x, '#ffd84d', 822, 352 + wob, 10, 6 + Math.abs(wob) * 2); label(x, 'TOP MOVER', 790, 380); label(x, tm ? tm[0].sym + ' ' + pct(tm[1], 1) + ' (1u)' : 'geen data', 790, 394, tm && tm[1] >= 0 ? '#2fe38a' : '#ff4d6d');
+  x.save(); x.translate(860, 455); x.rotate(Math.sin(SC.t) * 0.4); px(x, '#8a93c2', -18, -6, 36, 12); px(x, '#c9cff5', -2, -18, 4, 14); x.restore(); px(x, '#3a4580', 852, 465, 16, 25);
+  const whale = S.sel && S.sel.mtrades.length ? S.sel.mtrades.reduce((m, t) => t.usd > m.usd ? t : m, S.sel.mtrades[0]) : null; label(x, 'WHALE RADAR', 820, 505); label(x, whale ? (whale.side === 'buy' ? 'koop ' : 'verkoop ') + usd(whale.usd) : 'geen data', 820, 519, whale ? (whale.side === 'buy' ? '#2fe38a' : '#ff4d6d') : '#8a93c2');
+  px(x, '#141a33', 40, 250, 50, 140); for (let i = 0; i < 6; i++){ px(x, '#232b4d', 46, 258 + i * 21, 38, 14); px(x, (Math.floor(SC.t * 4 + i) % 3) ? '#2fe38a' : '#ff4d6d', 76, 263 + i * 21, 4, 4); } label(x, 'SERVER', 44, 405);
+  const eq = CONFIG.capitalSol + PM.taken().reduce((s, x) => s + x.pnl, 0); px(x, '#232b4d', 110, 300, 70, 60); px(x, '#3a4580', 140, 322, 12, 12); label(x, 'PAPER FUNDS', 104, 375); label(x, eq.toFixed(4) + ' SOL', 104, 389, eq >= CONFIG.capitalSol ? '#2fe38a' : '#ff4d6d');
+  const d0 = new Date(); x.strokeStyle = '#c9cff5'; x.lineWidth = 2; x.beginPath(); x.arc(790, 200, 26, 0, 7); x.stroke(); const ang = (d0.getHours() % 12 + d0.getMinutes() / 60) / 12 * 6.283 - 1.571, angm = d0.getMinutes() / 60 * 6.283 - 1.571; x.beginPath(); x.moveTo(790, 200); x.lineTo(790 + Math.cos(ang) * 14, 200 + Math.sin(ang) * 14); x.moveTo(790, 200); x.lineTo(790 + Math.cos(angm) * 21, 200 + Math.sin(angm) * 21); x.stroke(); label(x, 'LOCAL TIME', 760, 242);
+  px(x, '#141a33', 640, 160, 60, 50); label(x, "DAY'S", 646, 176); label(x, 'REPORTS', 646, 189); label(x, PM.taken().filter(x => x.exitTime >= Math.floor(nowS() / 86400) * 86400).length + ' trades', 646, 203, '#ffd84d');
+  [[60, 470], [700, 260], [250, 250]].forEach(([a, b]) => { px(x, '#3a2a1a', a, b + 14, 14, 12); px(x, '#2fe38a', a - 4, b, 22, 16); px(x, '#1fa866', a + 2, b - 8, 10, 10); });
+  px(x, '#2a1f45', 650, 470, 110, 26); px(x, '#3d2d66', 650, 458, 110, 14); label(x, 'LOUNGE', 680, 512);
+  // bureaus + agents
+  DESKS.forEach(([a, dx, dy], k) => {
+    const cc = S.coins[k] || null; px(x, '#1b2242', dx - 45, dy + 10, 100, 34); px(x, '#232b4d', dx - 45, dy + 44, 100, 6);
+    px(x, '#05070f', dx - 30, dy - 30, 70, 40); px(x, '#3a4580', dx - 32, dy - 32, 74, 2);
+    if (cc && cc.bars.length > 5){ const V = cc.bars.slice(-20); let lo = Infinity, hi = -Infinity; V.forEach(b => { lo = Math.min(lo, b.close); hi = Math.max(hi, b.close); }); x.strokeStyle = V[V.length - 1].close >= V[0].close ? '#2fe38a' : '#ff4d6d'; x.lineWidth = 1; x.beginPath(); V.forEach((b, i) => { const yy = dy - 25 + (hi - b.close) / ((hi - lo) || 1) * 28; i ? x.lineTo(dx - 27 + i * 3.4, yy) : x.moveTo(dx - 27, yy); }); x.stroke(); x.fillStyle = '#8a93c2'; x.font = '8px monospace'; x.fillText(cc.sym.slice(0, 8), dx - 27, dy + 6); }
+    const br = Math.sin(SC.t * 2 + k) * 2, col = COL[a]; px(x, col, dx - 4, dy + 50 + br, 30, 24 - br); px(x, col, dx - 1, dy + 46 + br, 24, 6); px(x, '#fff', dx + 3, dy + 56 + br, 5, 5); px(x, '#fff', dx + 14, dy + 56 + br, 5, 5); px(x, '#000', dx + 5, dy + 58 + br, 2, 2); px(x, '#000', dx + 16, dy + 58 + br, 2, 2);
+    label(x, a, dx - 2, dy + 92, col);
+    const g = S.agents[a]; if (g && g.flash && now - g.flash < 4000) bubble(x, dx + 10, dy - 40, g.thought);
+    SC.hits.push({ x: dx - 45, y: dy - 32, w: 100, h: 130, act: () => openAgent(a) });
+  });
+  [['CRAWLER', 175, 420], ['SOCIAL', 900, 230]].forEach(([a, ax, ay], k) => { const bob = Math.sin(SC.t * 2.5 + k) * 3, col = COL[a]; px(x, col, ax, ay + bob, 22, 18); px(x, '#fff', ax + 4, ay + 5 + bob, 4, 4); px(x, '#fff', ax + 13, ay + 5 + bob, 4, 4); label(x, a, ax - 6, ay + 34, col); const g = S.agents[a]; if (g.flash && now - g.flash < 4000) bubble(x, ax + 10, ay - 10, g.thought); SC.hits.push({ x: ax - 8, y: ay - 6, w: 40, h: 46, act: () => openAgent(a) }); });
+  if (DEMO){ x.fillStyle = '#ffd84d'; x.font = 'bold 14px monospace'; x.fillText('DEMO — verzonnen koersen', 380, 528); }
+}
+function label(x, t, a, b, col){ x.fillStyle = col || '#8a93c2'; x.font = '10px monospace'; x.fillText(t, a, b); }
+function bubble(x, a, b, t){ t = String(t).slice(0, 30); x.font = '10px monospace'; const w = x.measureText(t).width + 10; px(x, '#e9ecff', a - w / 2, b - 16, w, 16); px(x, '#e9ecff', a - 3, b, 6, 4); x.fillStyle = '#0b0f1c'; x.fillText(t, a - w / 2 + 5, b - 5); }
+function sceneHit(ev){ const r = SC.cv.getBoundingClientRect(), mx = (ev.clientX - r.left) / r.width * 960, my = (ev.clientY - r.top) / r.height * 540; return SC.hits.slice().reverse().find(h => mx >= h.x && mx <= h.x + h.w && my >= h.y && my <= h.y + h.h); }
+SC.cv.addEventListener('click', ev => { const h = sceneHit(ev); if (h) h.act(); });
+SC.cv.addEventListener('mousemove', ev => { SC.cv.style.cursor = sceneHit(ev) ? 'pointer' : 'default'; });
+SC.cv.addEventListener('keydown', ev => { if (ev.key === 'Enter') openBig(S.sel); });
+
+/* =============================== UI: chart-muur =============================== */
+function buildWall(){
+  $('wall').innerHTML = S.coins.map((c, i) => '<div class="tile" tabindex="0" data-i="' + i + '"><div class="tt"><b>' + esc(c.sym) + '</b><span class="st" id="ws-' + i + '">–</span></div><canvas id="wc-' + i + '"></canvas><div class="ft"><span id="wp-' + i + '">–</span><span id="wa-' + i + '">–</span></div></div>').join('') || '<div class="empty">geen coins (nog)</div>';
+}
+function renderWall(){
+  S.coins.forEach((c, i) => { const cv = $('wc-' + i); if (!cv) return; drawChart(cv, c, { n: 60, markers: markersFor(c) });
+    const st = $('ws-' + i); st.textContent = c.state === 'IN' ? 'IN POSITIE' : c.state; st.className = 'st ' + c.state;
+    const pos = Object.values(PM.open).find(p => p.mint === c.mint), cl = PM.taken().filter(x => x.mint === c.mint), net = cl.reduce((s, x) => s + x.pnl, 0);
+    const last = c.bars[c.bars.length - 1];
+    $('wp-' + i).innerHTML = pos && last ? '<span class="' + (last.close * (1 - pos.side) / pos.entry - 1 - pos.cost / 100 >= 0 ? 'ok' : 'bad') + '">open ' + pct(last.close * (1 - pos.side) / pos.entry - 1 - pos.cost / 100) + '</span>' : 'netto ' + (cl.length ? '<span class="' + (net >= 0 ? 'ok' : 'bad') + '">' + sol(net) + '</span>' : '–');
+    $('wa-' + i).textContent = pos ? pos.strat : (c.explain.find(x => x.ok) || {}).strat || (c.err ? 'fout: ' + (c.lastErr || '') : ''); });
+}
+function flashTile(c, k){ const i = S.coins.indexOf(c), el = document.querySelector('.tile[data-i="' + i + '"]'); if (!el) return; el.classList.add('fl-' + k); setTimeout(() => el.classList.remove('fl-' + k), 1200); }
+$('wall').addEventListener('click', ev => { const t = ev.target.closest('.tile'); if (t) openBig(S.coins[+t.dataset.i], t); });
+$('wall').addEventListener('keydown', ev => { const t = ev.target.closest('.tile'); if (t && ev.key === 'Enter') openBig(S.coins[+t.dataset.i], t); });
+function setView(wall){ S.wallView = wall; $('scene').hidden = wall; $('wall').hidden = !wall; $('vScene').classList.toggle('on', !wall); $('vWall').classList.toggle('on', wall); $('stageTitle').textContent = wall ? 'CHART-MUUR' : 'KANTOOR'; $('stageSub').textContent = wall ? '10 coins tegelijk · klik om uit te klappen' : 'agents aan het werk · klik op een agent, coin of de muurgrafiek'; S.dirty = true; }
+$('vScene').onclick = () => setView(false); $('vWall').onclick = () => setView(true);
+$('vSound').onclick = () => { S.sound = !S.sound; $('vSound').textContent = 'GELUID: ' + (S.sound ? 'AAN' : 'UIT'); $('vSound').classList.toggle('on', S.sound); };
+
+/* =============================== UI: uitklappen (overlay) =============================== */
+function openBig(c, fromEl){
+  if (!c) return; select(c); S.big = c; const ov = $('ov'), box = $('ovBox'); ov.classList.add('open'); box.classList.add('from');
+  if (fromEl){ const r = fromEl.getBoundingClientRect(); box.style.transformOrigin = (r.left + r.width / 2) + 'px ' + (r.top + r.height / 2) + 'px'; } else box.style.transformOrigin = 'center';
+  requestAnimationFrame(() => requestAnimationFrame(() => box.classList.remove('from'))); renderBig(); $('ovBack').focus();
+}
+function closeBig(){ $('ov').classList.remove('open'); S.big = null; }
+$('ovBack').onclick = closeBig; $('ov').addEventListener('click', ev => { if (ev.target === $('ov')) closeBig(); });
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape'){ closeBig(); $('drawer').classList.remove('open'); } });
+$('ovPause').onclick = () => { if (S.big) togglePause(S.big); renderBig(); };
+$('ovClose').onclick = () => { if (S.big) closePos(S.big); renderBig(); };
+function renderBig(){
+  const c = S.big; if (!c) return;
+  $('ovTitle').textContent = c.sym + ' · ' + (c.state === 'IN' ? 'IN POSITIE' : c.state); $('ovSub').textContent = 'score ' + (c.score ?? '–') + ' · rondje ' + (c.cost != null ? c.cost.toFixed(2) + '%' : '–') + ' · ' + usd(c.liq) + ' liq';
+  $('ovPause').textContent = c.paused ? 'HERVAT' : 'PAUZEER';
+  drawChart($('bigChart'), c, { n: 160, axis: true, markers: markersFor(c, true), lines: linesFor(c, true) });
+  $('ovSide').innerHTML = sideKV(c); $('ovBottom').innerHTML = coinTrades(c, 12) + patternList(c);
+}
+
+/* =============================== UI: analysis =============================== */
+function select(c){ S.sel = c; S.dirty = true; if (!DEMO && c) fetchMarketTrades(c); }
+async function fetchMarketTrades(c){
+  if (c._trAt && Date.now() - c._trAt < 120000) return; c._trAt = Date.now();
+  try { const d = await gt(GT + '/pools/' + c.pool + '/trades', 2); c.mtrades = VPL.vpTradesFromGecko(d); S.dirty = true; } catch (e){ c.mtrades = []; }
+}
+function sideKV(c){
+  const pos = Object.values(PM.open).find(p => p.mint === c.mint), last = c.bars[c.bars.length - 1], s = c.P && c.P.vp ? c.P.vp[c.P.vp.length - 1] : null;
+  const rows = [['status', c.state], ['score', c.score ?? '–'], ['risicoscore', c.risk ?? '–'], ['rondje kosten', c.cost != null ? c.cost.toFixed(2) + '% (' + (c.costSrc || '') + ')' : '–'], ['liquiditeit', usd(c.liq)], ['volume 24u', usd(c.vol24)],
+    ['regime', c.P ? c.P.regime[c.P.n - 2] : '–'], ['POC / VAH / VAL', s ? fmtPx(s.poc) + ' / ' + fmtPx(s.vah) + ' / ' + fmtPx(s.val) : '–'], ['profielvorm', s ? s.shape : '–'],
+    ['positie', pos ? pos.strat + ' · ' + pos.size.toFixed(3) + ' SOL' : 'geen'], ['entry (eff.)', pos ? fmtPx(pos.entry) : '–'], ['nu (open)', pos && last ? pct(last.close * (1 - pos.side) / pos.entry - 1 - pos.cost / 100) : '–'],
+    ['laatste blik', c.lastLook ? Math.round((Date.now() - c.lastLook) / 1000) + ' s geleden' : '–'], ['fouten', c.err ? c.err + ' (' + esc(c.lastErr) + ')' : '0']];
+  return rows.map(([k, v]) => '<span>' + esc(k) + '</span><span>' + esc(v) + '</span>').join('');
+}
+function patternList(c){ const ok = c.explain.filter(x => x.ok), top = c.explain.filter(x => !x.ok).slice(0, 6);
+  return '<div class="small" style="margin-top:6px">Patronen/signalen op de laatste gesloten candle (echte engine):</div>' + (c.explain.length ? (ok.length ? ok.map(x => '<div class="ok">✅ ' + esc(x.strat) + ' — ' + esc(x.title) + '</div>').join('') : '<div class="mut">geen enkel signaal</div>') + top.map(x => '<div class="mut">· ' + esc(x.strat) + ': ' + esc(x.why) + '</div>').join('') : '<div class="mut">geen data</div>'); }
+function coinTrades(c, n){
+  const rows = PM.closed.filter(x => x.mint === c.mint).slice(-n).reverse().map(x => '<tr><td>' + hm(x.fillT) + '→' + hm(x.exitTime) + '</td><td class="BUY">BUY</td><td class="SELL">SELL</td><td>' + esc(x.strat) + '</td><td class="' + (x.pnl >= 0 ? 'ok' : 'bad') + '">' + pct(x.retP) + '</td><td>' + (x.taken ? 'PAPER' : 'SCHADUW') + '</td></tr>').join('');
+  return '<table><thead><tr><th>tijd</th><th></th><th></th><th>strategie</th><th>netto</th><th>status</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6" class="mut">nog geen gesloten trades op deze coin</td></tr>') + '</tbody></table>';
+}
+function renderAnalysis(){
+  const c = S.sel; $('anTitle').textContent = c ? c.sym + ' · ANALYSIS' : 'ANALYSIS'; $('anSub').textContent = c ? '· ' + (c.state === 'IN' ? 'IN POSITIE' : c.state) : '· kies een coin';
+  drawChart($('anChart'), c, { n: 120, axis: true, markers: c ? markersFor(c, true) : [], lines: c ? linesFor(c, S.tab === 'vp') : [] });
+  $('anSide').innerHTML = c ? sideKV(c) : '<span>geen data</span><span></span>';
+  let html = '';
+  if (!c) html = '<div class="empty">geen data</div>';
+  else if (S.tab === 'sig') html = patternList(c);
+  else if (S.tab === 'vp'){ const s = c.P && c.P.vp ? c.P.vp[c.P.vp.length - 1] : null; html = s ? '<div class="kv"><span>POC</span><span>' + fmtPx(s.poc) + '</span><span>Value area</span><span>' + fmtPx(s.val) + ' – ' + fmtPx(s.vah) + '</span><span>Vorm</span><span>' + s.shape + '</span><span>HVN</span><span>' + s.hvn.slice(0, 4).map(fmtPx).join(', ') + '</span><span>LVN</span><span>' + s.lvn.slice(0, 4).map(fmtPx).join(', ') + '</span><span>Koopaandeel (schatting uit candles)</span><span>' + Math.round(s.buyShare * 100) + '%</span></div><div class="small">Lijnen staan op de grote chart (POC paars, VAH/VAL blauw).</div>' : '<div class="empty">nog geen profiel (te weinig candles)</div>'; }
+  else if (S.tab === 'flow'){ const T = (c.mtrades || []).slice().sort((a, b) => a.time - b.time); if (!T.length) html = '<div class="empty">' + (DEMO ? 'geen swap-data in demo' : 'geen data (swaps worden geladen)') + '</div>'; else { let cvd = 0; const b = T.filter(t => t.side === 'buy').reduce((s, t) => s + t.usd, 0), sv = T.filter(t => t.side === 'sell').reduce((s, t) => s + t.usd, 0); T.forEach(t => cvd += t.side === 'buy' ? t.usd : -t.usd);
+      html = '<div class="kv"><span>laatste swaps</span><span>' + T.length + ' (' + hm(T[0].time) + '–' + hm(T[T.length - 1].time) + ' UTC)</span><span>koop / verkoop</span><span><span class="ok">' + usd(b) + '</span> / <span class="bad">' + usd(sv) + '</span></span><span>CVD</span><span class="' + (cvd >= 0 ? 'ok' : 'bad') + '">' + (cvd >= 0 ? '+' : '−') + usd(Math.abs(cvd)) + '</span><span>unieke kopers</span><span>' + new Set(T.filter(t => t.side === 'buy').map(t => t.wallet)).size + '</span></div><div class="small">Eindtoets 13-10: echte koopdruk voorspelde het rendement NIET (r ≈ 0). Alleen ter info.</div>'; } }
+  else html = coinTrades(c, 30);
+  $('anBottom').innerHTML = html;
+}
+$('anTabs').addEventListener('click', ev => { const b = ev.target.closest('button'); if (!b) return; S.tab = b.dataset.tab; [...$('anTabs').children].forEach(x => x.classList.toggle('on', x === b)); S.dirty = true; });
+$('anChart').addEventListener('click', () => openBig(S.sel)); $('anChart').addEventListener('keydown', ev => { if (ev.key === 'Enter') openBig(S.sel); });
+
+/* =============================== UI: thresholds + kooi (validatie: nooit ruimer dan de config) =============================== */
+const TH_DEF = [['min_liquidity_usd', 'min. liquiditeit ($)', 0, 1e9], ['min_volume_24h_usd', 'min. volume 24u ($)', 0, 1e10], ['min_age_minutes', 'min. leeftijd (min)', 0, 1e5], ['max_round_trip_pct', 'max. kosten rondje (%)', 0, 8], ['ev_block_after', 'EV-blok na N trades', 5, 500], ['cooldown_min', 'cooldown na exit (min)', 0, 600]];
+const CAGE_DEF = [['maxOpen', 'max. posities'], ['maxExpPct', 'max. blootstelling %'], ['coinMaxPct', 'max. per coin %'], ['riskPct', 'max. verlies per trade %'], ['hourLossPct', 'max. verlies per uur %'], ['dayLossPct', 'max. verlies per dag %'], ['weekLossPct', 'max. verlies per week %'], ['maxSlipPct', 'max. slippage %']];
+function renderThresh(){
+  $('thList').innerHTML = '<div class="small">Instap-filters (vrij aan te passen binnen de kooi):</div>' + TH_DEF.map(([k, l]) => '<div class="th-row"><span>' + l + '</span><input data-th="' + k + '" value="' + TH[k] + '" inputmode="decimal" aria-label="' + l + '"><span class="ok">✓</span></div>').join('')
+    + '<div class="small" style="margin-top:6px">Harde kooi — alleen STRENGER maken kan hier; ruimer alleen in de config (door jou):</div>' + CAGE_DEF.map(([k, l]) => '<div class="th-row"><span>' + l + ' <span class="lock">🔒 ≤ ' + CONFIG.cage[k] + '</span></span><input data-cage="' + k + '" value="' + CAGE[k] + '" inputmode="decimal" aria-label="' + l + '"><span class="ok">✓</span></div>').join('');
+}
+$('thList').addEventListener('change', ev => {
+  const i = ev.target; const v = Number(String(i.value).replace(',', '.'));
+  if (i.dataset.th){ const d = TH_DEF.find(x => x[0] === i.dataset.th); if (!Number.isFinite(v) || v < d[2] || v > d[3]){ i.classList.add('err'); $('thMsg').textContent = 'ongeldig: ' + d[1] + ' moet tussen ' + d[2] + ' en ' + d[3]; return; } TH[i.dataset.th] = v; }
+  if (i.dataset.cage){ const k = i.dataset.cage; if (!Number.isFinite(v) || v <= 0 || v > CONFIG.cage[k]){ i.classList.add('err'); i.value = CAGE[k]; $('thMsg').textContent = 'GEBLOKKEERD: de kooi mag hier niet ruimer dan ' + CONFIG.cage[k]; return; } CAGE[k] = v; }
+  i.classList.remove('err'); $('thMsg').textContent = 'opgeslagen'; PM.save();
+});
+function renderRug(){
+  const c = S.sel; $('rugCoin').textContent = c ? c.sym : '–'; if (!c){ $('rugList').innerHTML = '<span>geen data</span><span></span>'; return; }
+  const age = c.created ? (Date.now() - Date.parse(c.created)) / 60000 : null, last = c.bars[c.bars.length - 1];
+  const drop = c.bars.length > 7 ? Math.min(...c.bars.slice(-6).map(b => b.low)) / Math.max(...c.bars.slice(-7, -1).map(b => b.high)) - 1 : null;
+  const chk = (ok, txt) => '<span class="' + (ok == null ? 'mut' : ok ? 'ok' : 'bad') + '">' + (ok == null ? '–' : ok ? '✓' : '✗') + ' ' + esc(txt) + '</span>';
+  const rows = [['liquiditeit ≥ min', chk(c.liq >= TH.min_liquidity_usd, usd(c.liq))], ['volume 24u ≥ min', chk(c.vol24 == null ? null : c.vol24 >= TH.min_volume_24h_usd, usd(c.vol24))], ['leeftijd ≥ min', chk(age == null ? null : age >= TH.min_age_minutes, age == null ? 'onbekend' : Math.round(age / 60) + ' u')],
+    ['kosten rondje ≤ max', chk(c.cost == null ? null : c.cost <= TH.max_round_trip_pct, c.cost != null ? c.cost.toFixed(2) + '%' : 'onbekend')], ['geen flush −80% (30 min)', chk(drop == null ? null : drop > -0.8, drop == null ? '–' : pct(drop, 0))],
+    ['verkoopbaar (Jupiter-rondje)', chk(c.costSrc ? /gemeten/.test(c.costSrc) : null, c.costSrc || 'onbekend')], ['mint/freeze authority', '<span class="mut">alleen gecontroleerd door de bot (RugCheck), niet in de browser</span>']];
+  $('rugList').innerHTML = rows.map(([k, v]) => '<span>' + esc(k) + '</span>' + v).join('');
+}
+function drawRadar(now){
+  const cv = $('radar'), x = cv.getContext('2d'), W = cv.width, R = W / 2 - 4; x.fillStyle = '#070a14'; x.fillRect(0, 0, W, W); x.strokeStyle = '#1f2a55'; [1, 0.66, 0.33].forEach(k => { x.beginPath(); x.arc(W / 2, W / 2, R * k, 0, 7); x.stroke(); });
+  const a = (now / 1500) % 6.283; const g = x.createRadialGradient(W / 2, W / 2, 0, W / 2, W / 2, R); g.addColorStop(0, 'rgba(232,56,155,.0)'); g.addColorStop(1, 'rgba(232,56,155,.35)'); x.fillStyle = g; x.beginPath(); x.moveTo(W / 2, W / 2); x.arc(W / 2, W / 2, R, a - 0.5, a); x.fill();
+  S.coins.forEach((c, i) => { const ang = i / Math.max(1, S.coins.length) * 6.283, r = R * (1 - (c.score || 0) / 110); x.fillStyle = c.state === 'IN' ? '#2fe38a' : c.state === 'SIGNAL' ? '#ffd84d' : c.state === 'FOUT' ? '#ff4d6d' : '#4dc3ff'; x.fillRect(W / 2 + Math.cos(ang) * r - 3, W / 2 + Math.sin(ang) * r - 3, 6, 6); });
+}
+
+/* =============================== UI: kansen, feed, tradetabel, balans, auditor =============================== */
+function renderOpps(){
+  const q = ($('oppSearch').value || '').toLowerCase();
+  const L = S.coins.slice().sort((a, b) => (b.score || 0) - (a.score || 0)).filter(c => (S.oppFilter === 'all' || (S.oppFilter === 'sig' && c.state === 'SIGNAL') || (S.oppFilter === 'pos' && c.state === 'IN')) && (!q || c.sym.toLowerCase().includes(q)));
+  $('oppBody').innerHTML = L.map(c => { const i = S.coins.indexOf(c), net = PM.taken().filter(x => x.mint === c.mint).reduce((s, x) => s + x.pnl, 0), has = Object.values(PM.open).some(p => p.mint === c.mint);
+    return '<tr><td><b>' + esc(c.sym) + '</b></td><td>' + (c.score ?? '–') + '</td><td><span class="st ' + c.state + '">' + (c.state === 'IN' ? 'IN POSITIE' : c.state) + '</span></td><td>' + (c.cost != null ? c.cost.toFixed(2) + '%' : '–') + '</td><td>' + usd(c.liq) + '</td><td class="' + (net >= 0 ? 'ok' : 'bad') + '">' + sol(net) + '</td><td><button data-a="view" data-i="' + i + '">BEKIJK</button> <button data-a="pause" data-i="' + i + '">' + (c.paused ? 'HERVAT' : 'PAUZEER') + '</button> <button data-a="close" data-i="' + i + '"' + (has ? '' : ' disabled') + '>SLUIT POSITIE</button></td></tr>'; }).join('') || '<tr><td colspan="7" class="mut">geen data</td></tr>';
+}
+$('opps').addEventListener('click', ev => { const b = ev.target.closest('button'); if (!b) return; if (b.dataset.f){ S.oppFilter = b.dataset.f; [...b.parentNode.querySelectorAll('[data-f]')].forEach(x => x.classList.toggle('on', x === b)); S.dirty = true; return; }
+  const c = S.coins[+b.dataset.i]; if (!c) return; if (b.dataset.a === 'view'){ select(c); $('analysis').scrollIntoView({ behavior: 'smooth' }); } if (b.dataset.a === 'pause') togglePause(c); if (b.dataset.a === 'close') closePos(c); S.dirty = true; });
+$('oppSearch').addEventListener('input', () => S.dirty = true);
+function togglePause(c){ c.paused = !c.paused; say('CHIEF', (c.paused ? 'gepauzeerd: ' : 'hervat: ') + c.sym + ' (door jou)'); PM.save(); S.dirty = true; }
+function closePos(c){ const n = PM.manualClose(c); say('RISK', n ? 'handmatig gesloten: ' + c.sym : 'geen open positie op ' + c.sym); S.dirty = true; }
+function renderFeed(){
+  const F = S.feed.slice(0, 80); $('feed').innerHTML = F.length ? F.map(e => { const r = e.r || {};
+    const txt = e.type === 'BUY' ? '<span class="BUY">BUY</span> ' + esc(e.sym) + ' · ' + esc(r.strat) + ' · ' + (r.size || 0).toFixed(3) + ' SOL @ ' + fmtPx(r.entry) : e.type === 'SELL' ? '<span class="SELL">SELL</span> ' + esc(e.sym) + ' · ' + esc(r.strat) + ' · <span class="' + (r.pnl >= 0 ? 'ok' : 'bad') + '">' + pct(r.retP) + ' (' + sol(r.pnl) + ' SOL)</span> · ' + esc(r.exit)
+      : e.type === 'SKIP' ? '<span class="warn">SKIP</span> ' + esc(e.sym) + ' · ' + esc(r.strat) + ' → schaduw: ' + esc(r.skip) : e.type === 'SHADOWX' ? '<span class="mut">schaduw dicht</span> ' + esc(e.sym) + ' ' + pct(r.retP) : e.type === 'FAIL' ? '<span class="bad">MISLUKT</span> ' + esc(e.sym) + ' · ' + esc(r.why) : e.type === 'ERR' ? '<span class="bad">FOUT</span> ' + esc(e.sym) + ' · ' + esc(r.why) : '<span class="mut">' + e.type + '</span>';
+    return '<div><span class="t">' + hm(e.at) + '</span><span>' + txt + '</span></div>'; }).join('') : '<div class="empty">nog geen gebeurtenissen</div>';
+  const L = S.lat.slice().sort((a, b) => a - b), comp = S.coins.map(c => c.lastMs || 0).filter(Boolean).sort((a, b) => a - b);
+  $('lat').textContent = 'data ' + (L.length ? Math.round(L[Math.floor(L.length / 2)]) + ' ms' : '–') + ' · engine ' + (comp.length ? Math.round(comp[Math.floor(comp.length / 2)]) + ' ms/coin' : '–') + ' · paper: verzonden = ledger, bevestigd = n.v.t.' + (S.backpressure ? ' · BACKPRESSURE' : '');
+}
+function tradeRows(){
+  const list = S.trFilter === 'taken' ? PM.taken().concat(Object.values(PM.open)) : PM.closed.filter(x => !x.taken).concat(Object.values(PM.shadow));
+  const rows = []; list.forEach(x => { rows.push({ at: x.fillT, x, side: 'BUY' }); if (x.exitTime) rows.push({ at: x.exitTime, x, side: 'SELL' }); });
+  return rows.sort((a, b) => b.at - a.at);
+}
+function renderTrades(){
+  const rows = tradeRows().slice(0, 200);
+  $('trBody').innerHTML = rows.map(({ at, x, side }) => '<tr><td>' + new Date(at * 1000).toISOString().slice(5, 16).replace('T', ' ') + '</td><td>' + esc(x.sym) + '</td><td class="' + side + '">' + side + '</td><td>' + fmtPx(side === 'BUY' ? x.entry : x.exitEff) + '</td><td>' + (x.size || 0).toFixed(4) + '</td><td>' + (side === 'SELL' && x.fees != null ? x.fees.toFixed(5) : '–') + '</td><td class="' + (side === 'SELL' ? (x.pnl >= 0 ? 'ok' : 'bad') : '') + '">' + (side === 'SELL' ? sol(x.pnl) + ' (' + pct(x.retP) + ')' : 'open') + '</td><td>' + esc(x.strat) + '</td><td>' + esc(side === 'BUY' ? (x.skip ? 'skip: ' + x.skip : x.why) : x.exit) + '</td><td>' + (x.cls || 'NORMAAL') + '</td><td>' + (x.skip || x.taken === false ? 'SCHADUW' : DEMO ? 'DEMO' : 'PAPER') + '</td><td>—</td></tr>').join('') || '<tr><td colspan="12" class="mut">nog geen trades</td></tr>';
+}
+document.querySelectorAll('[data-tf]').forEach(b => b.onclick = () => { S.trFilter = b.dataset.tf; document.querySelectorAll('[data-tf]').forEach(x => x.classList.toggle('on', x === b)); S.dirty = true; });
+$('csv').onclick = () => { const head = 'tijd_utc;coin;BUY/SELL;prijs_eff;hoeveelheid_sol;kosten_sol;netto_sol;netto_pct;strategie;reden;tag;status;signature';
+  const body = tradeRows().map(({ at, x, side }) => [new Date(at * 1000).toISOString(), x.sym, side, side === 'BUY' ? x.entry : x.exitEff, x.size, side === 'SELL' ? x.fees : '', side === 'SELL' ? x.pnl : '', side === 'SELL' ? (x.retP * 100).toFixed(3) : '', x.strat, '"' + String(side === 'BUY' ? (x.skip ? 'skip: ' + x.skip : x.why) : x.exit).replace(/"/g, "'") + '"', x.cls || 'NORMAAL', x.skip || x.taken === false ? 'SCHADUW' : DEMO ? 'DEMO' : 'PAPER', ''].join(';')).join('\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([head + '\n' + body], { type: 'text/csv' })); a.download = CONFIG.name.toLowerCase() + '-trades.csv'; a.click(); };
+function metrics(L){ const n = L.length, s = L.reduce((a, x) => a + x.pnl, 0), w = L.filter(x => x.pnl > 0).length, fees = L.reduce((a, x) => a + (x.fees || 0), 0), gross = s + fees; return { n, s, win: n ? w / n : 0, fees, gross }; }
+function renderBalance(){
+  const tk = PM.taken().slice().sort((a, b) => a.exitTime - b.exitTime), day = Math.floor((Date.now() - PM.start) / 86400000) + 1;
+  $('balTitle').textContent = 'BALANCE · DAY ' + day; $('dayPill').textContent = 'DAY ' + day;
+  const a = metrics(tk), b = metrics(tk.filter(x => x.cls !== 'PULL')), c = metrics(tk.filter(x => x.cls !== 'PULL' && x.cls !== 'RUG?')), eq = CONFIG.capitalSol + a.s;
+  $('balNum').textContent = eq.toFixed(4) + ' SOL'; $('balNum').className = 'bignum' + (a.s < 0 ? ' neg' : '');
+  $('pnlCols').innerHTML = 'P&amp;L (a) alles: <b class="' + (a.s >= 0 ? 'ok' : 'bad') + '">' + sol(a.s) + '</b> · ' + a.n + ' trades · ' + Math.round(a.win * 100) + '% winst<br>(b) zonder pulls: ' + sol(b.s) + '<br>(c) zonder pulls en rugs: ' + sol(c.s) + '<br>fees: ' + a.fees.toFixed(4) + ' SOL' + (a.gross > 0 ? ' = ' + Math.round(a.fees / a.gross * 100) + '% van bruto winst' : a.n ? ' · bruto ≤ 0' : '') + (S.solUsd ? '<br>≈ $' + (a.s * S.solUsd).toFixed(2) : '') + '<br><span class="small">(a) is de waarheid</span>';
+  $('balSub').textContent = Object.keys(PM.open).length + ' open · ' + Object.keys(PM.shadow).length + ' schaduw open';
+  const cv = $('balChart'), { w, h, d } = fitCanvas(cv), x = cv.getContext('2d'); x.fillStyle = '#070a14'; x.fillRect(0, 0, w, h);
+  if (!tk.length){ x.fillStyle = '#8a93c2'; x.font = 11 * d + 'px monospace'; x.fillText('geen data: nog geen gesloten paper-trades', 8 * d, h / 2); return; }
+  const pts = [CONFIG.capitalSol]; tk.forEach(t => pts.push(pts[pts.length - 1] + t.pnl)); const lo = Math.min(...pts), hi = Math.max(...pts), bh = h * 0.25, ch = h - bh - 6 * d, Y = v => 4 * d + (hi - v) / ((hi - lo) || 1) * ch, X = i => i / (pts.length - 1 || 1) * (w - 4 * d);
+  const gr = x.createLinearGradient(0, 0, 0, ch); gr.addColorStop(0, 'rgba(47,227,138,.45)'); gr.addColorStop(1, 'rgba(47,227,138,0)'); x.fillStyle = gr; x.beginPath(); x.moveTo(0, ch + 4 * d); pts.forEach((v, i) => x.lineTo(X(i), Y(v))); x.lineTo(X(pts.length - 1), ch + 4 * d); x.fill();
+  x.strokeStyle = eq >= CONFIG.capitalSol ? '#2fe38a' : '#ff4d6d'; x.lineWidth = 2 * d; x.beginPath(); pts.forEach((v, i) => i ? x.lineTo(X(i), Y(v)) : x.moveTo(X(i), Y(v))); x.stroke();
+  const mx = Math.max(...tk.map(t => Math.abs(t.pnl))) || 1; tk.forEach((t, i) => { const bw = Math.max(1, (w / tk.length) * 0.7); x.fillStyle = t.pnl >= 0 ? '#2fe38a' : '#ff4d6d'; const hh = Math.abs(t.pnl) / mx * bh; x.fillRect(X(i + 1) - bw / 2, h - hh, bw, hh); });
+}
+function audit(){
+  // onafhankelijk van de engine-uitkomst: rekent uit prijzen + kosten opnieuw, controleert vullingen tegen de candles en de kooi over de tijd
+  const tk = PM.taken(), issues = []; let dev = 0, base = 0;
+  tk.forEach(x => { const g = x.exitEff / x.entry - 1, pnl = x.size * (g - x.cost / 100) - PM.feeSol; dev += Math.abs(pnl - x.pnl); base += Math.abs(x.pnl);
+    const c = S.coins.find(c => c.mint === x.mint); if (c){ const b = c.bars.find(b => b.time === x.fillT); if (b && !(x.entry >= b.low * 0.999 && x.entry <= b.high * (1 + x.side) * 1.001)) issues.push(x.sym + ': entry buiten de candle'); } });
+  const keys = new Set(); let dup = 0; PM.closed.forEach(x => { if (keys.has(x.key)) dup++; keys.add(x.key); }); if (dup) issues.push(dup + ' dubbele trades');
+  const ev = []; tk.forEach(x => { ev.push([x.t, 1]); ev.push([x.exitTime, -1]); }); Object.values(PM.open).forEach(p => ev.push([p.t, 1])); ev.sort((a, b) => a[0] - b[0] || a[1] - b[1]); let cur = 0, max = 0; ev.forEach(e => { cur += e[1]; max = Math.max(max, cur); }); if (max > CAGE.maxOpen) issues.push('kooi: ' + max + ' tegelijk open > ' + CAGE.maxOpen);
+  const eqUi = CONFIG.capitalSol + tk.reduce((s, x) => s + x.pnl, 0), eqAud = CONFIG.capitalSol + tk.reduce((s, x) => s + x.size * (x.exitEff / x.entry - 1 - x.cost / 100) - PM.feeSol, 0);
+  const rel = base > 0 ? dev / base : 0; S.audit = { rel, issues, max, eqUi, eqAud };
+  $('audit').innerHTML = '<b>Auditor (paper-controle):</b> ' + tk.length + ' trades herberekend · afwijking ' + (rel * 100).toFixed(3) + '% ' + (rel < 0.005 ? '✓' : '✗ ALARM') + ' · max ' + max + '/' + CAGE.maxOpen + ' tegelijk · ' + (issues.length ? '<span class="bad">' + esc(issues.slice(0, 3).join('; ')) + '</span>' : 'geen afwijkingen') + ' · status: ' + (DEMO ? 'DEMO' : 'PAPER (niets on-chain)');
+}
+
+/* =============================== agent-drawer, header, kill switch =============================== */
+function openAgent(a){ S.drawer = a; $('drawer').classList.add('open'); renderDrawer(); $('drClose').focus(); }
+function renderDrawer(){ const a = S.drawer; if (!a) return; const g = S.agents[a]; $('drTitle').textContent = a + ' · ' + SUBS[a];
+  const extra = a === 'RISK' ? '<div class="small">Blokkades sinds start:</div>' + (Object.entries(PM.blocks).sort((x, y) => y[1] - x[1]).map(([k, v]) => '<div>' + esc(k) + ': ' + v + '×</div>').join('') || '<div class="mut">geen</div>')
+    : a === 'FILLS' ? (() => { const m = metrics(PM.taken()); return '<div class="kv"><span>trades</span><span>' + m.n + '</span><span>winrate</span><span>' + Math.round(m.win * 100) + '%</span><span>netto</span><span>' + sol(m.s) + ' SOL</span><span>fees</span><span>' + m.fees.toFixed(4) + ' SOL</span></div>'; })()
+    : a === 'CHIEF' ? (() => { const by = {}; PM.closed.forEach(x => { const o = by[x.strat] = by[x.strat] || [0, 0, 0]; o[0]++; o[1] += x.ret; if (x.taken) o[2]++; }); return '<div class="small">Prestatie per strategie (incl. schaduw):</div><table><tr><th>strategie</th><th>n</th><th>genomen</th><th>gem.</th></tr>' + (Object.entries(by).sort((x, y) => y[1][1] / y[1][0] - x[1][1] / x[1][0]).map(([k, o]) => '<tr><td>' + esc(k) + '</td><td>' + o[0] + '</td><td>' + o[2] + '</td><td class="' + (o[1] >= 0 ? 'ok' : 'bad') + '">' + pct(o[1] / o[0]) + '</td></tr>').join('') || '<tr><td colspan="4" class="mut">geen data</td></tr>') + '</table>'; })()
+    : a === 'SOCIAL' ? '<div class="mut">Er is geen sociale databron gekoppeld (X/Telegram). Deze agent toont daarom niets. Liever leeg dan verzonnen.</div>' : '';
+  $('drBody').innerHTML = '<div class="kv"><span>status</span><span>' + esc(g.chip) + '</span><span>nu</span><span>' + esc(g.val) + '</span></div><div style="margin:8px 0">“' + esc(g.thought) + '”</div>' + extra + '<div class="small" style="margin-top:8px">Laatste beslissingen:</div>' + (g.log.map(l => '<div><span class="mut">' + hm(l.at) + '</span> ' + esc(l.txt) + '</div>').join('') || '<div class="mut">nog niets</div>'); }
+$('drClose').onclick = () => { $('drawer').classList.remove('open'); S.drawer = null; };
+document.querySelector('#agents').addEventListener('click', ev => { const c = ev.target.closest('[data-agent]'); if (c) openAgent(c.dataset.agent); });
+document.querySelector('#agents').addEventListener('keydown', ev => { const c = ev.target.closest('[data-agent]'); if (c && ev.key === 'Enter') openAgent(c.dataset.agent); });
+document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => { const id = b.dataset.go === 'open' ? 'open' : b.dataset.go; $(id).scrollIntoView({ behavior: 'smooth' }); });
+function renderKill(){ $('kill').textContent = PM.killed ? 'KILL SWITCH AAN · HERVAT' : 'KILL SWITCH'; $('kill').classList.toggle('armed', PM.killed); }
+$('kill').onclick = () => { PM.killed = !PM.killed; if (PM.killed){ S.coins.forEach(c => PM.manualClose(c)); say('RISK', 'KILL SWITCH: geen entries, alles gesloten'); } else say('RISK', 'kill switch uit: entries weer toegestaan'); PM.save(); renderKill(); S.dirty = true; };
+function drawLogo(){ const x = $('logo').getContext('2d'); x.fillStyle = '#0b0f1c'; x.fillRect(0, 0, 28, 28); x.fillStyle = '#e8389b'; x.fillRect(4, 4, 8, 20); x.fillRect(16, 4, 8, 20); x.fillStyle = '#ffd84d'; x.fillRect(12, 10, 4, 8); x.fillStyle = '#2fe38a'; x.fillRect(6, 8, 4, 4); x.fillRect(18, 8, 4, 4); }
+
+/* =============================== render loop (60 fps scène, ~4 Hz panelen) =============================== */
+function frame(now){
+  if (!S.wallView && !document.hidden) drawScene(now);
+  drawRadar(now);
+  if (S.dirty || now - S.lastRender > 1000){ S.dirty = false; S.lastRender = now;
+    $('utcPill').textContent = new Date().toISOString().slice(11, 19) + ' UTC';
+    renderAgents(); renderOpps(); renderFeed(); renderTrades(); renderBalance(); renderAnalysis(); renderRug(); audit(); renderKill();
+    if (S.wallView) renderWall(); if (S.big) renderBig(); if (S.drawer) renderDrawer();
+    $('engineInfo').textContent = S.coins.length + ' coins · ' + S.calls + ' calls · ' + S.e429 + '× 429 · ' + S.errs + ' fouten · engine = bot-code (lab ' + (LAB ? LAB.LAB_STRATS.length + 6 : 0) + ' strategieën)';
+  }
+  requestAnimationFrame(frame);
+}
+
+/* =============================== start =============================== */
+async function solPrice(){ if (DEMO) return; try { const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'); const d = await r.json(); S.solUsd = d.solana.usd; } catch (_){} }
+async function boot(){
+  drawLogo(); renderThresh(); setView(false);
+  if (!LAB){ document.body.insertAdjacentHTML('afterbegin', '<div class="panel" style="color:#ff4d6d">mission-engine.js ontbreekt: upload public/mission-engine.js</div>'); return; }
+  if (DEMO){ S.coins = Array.from({ length: CONFIG.coins }, (_, k) => makeCoin({ mint: 'DEMO' + k + 'x'.repeat(30), pool: 'demo' + k, sym: 'DEMO' + (k + 1), liq: 80000 + k * 40000, vol24: 300000, created: new Date(Date.now() - 86400000 * 3).toISOString(), cost: 0.6 + k * 0.2, costSrc: 'DEMO' }));
+    S.coins.forEach((c, k) => { c._k = k; SIM.init(c, k); }); S.crawl = { found: 10, kept: 10, at: Date.now() }; }
+  else { solPrice(); setInterval(solPrice, 600000); say('CRAWLER', 'start'); S.coins = (await pickCoins()).map(makeCoin); }
+  const saved = (store.coins || []); S.coins.forEach(c => { const s = saved.find(x => x.mint === c.mint); if (s && s.paused) c.paused = true; });
+  S.sel = S.coins[0] || null; buildWall(); PM.save();
+  S.coins.forEach((c, k) => startWorker(c, k));
+  if (!DEMO) setInterval(async () => { const keepOpen = new Set(Object.values(PM.open).map(p => p.mint)); if (S.coins.filter(c => !keepOpen.has(c.mint)).length && Date.now() - S.crawl.at > 30 * 60000) { try { await crawl(); } catch (_){} } }, 60000);
+  requestAnimationFrame(frame);
+}
+window.ND = { S, PM, CONFIG, CAGE, TH, lookCoin, select, openBig, closeBig, setView };   // voor tests
+boot();
+</script>
+</body>
+</html>
