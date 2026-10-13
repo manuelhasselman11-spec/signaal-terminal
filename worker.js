@@ -50,7 +50,7 @@ const POLL_MS = Math.max(10000, Number(process.env.POLL_MS) || 30000);
 const STOPWATCH_MS = process.env.STOPWATCH_MS === '0' ? 0 : Math.max(2000, Number(process.env.STOPWATCH_MS) || 5000);
 const TG_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const TG_CHAT = (process.env.TELEGRAM_CHAT_ID || '').trim();
-const BOT_VERSION = '13-10b';   // shown in /status and the startup log — compare with the website version
+const BOT_VERSION = '13-10e';   // shown in /status and the startup log — compare with the website version
 
 const chainMap = {
   solana: 'solana', ethereum: 'eth', bsc: 'bsc', base: 'base',
@@ -361,9 +361,14 @@ async function fetchBestPair(tokenAddress) {
   const liqOf = x => (x.liquidity && x.liquidity.usd) || 0;
   const tok = String(tokenAddress).toLowerCase();
   // prefer pools where this coin is the base token; otherwise a pool where it is the quote ("money") side
-  let best = pairs.filter(x => x.baseToken && String(x.baseToken.address).toLowerCase() === tok).sort((a, b) => liqOf(b) - liqOf(a))[0];
+  // 13-10e: among the pools with enough liquidity (≥ 25 % of the deepest) take the one with the most trading (24 h volume). The deepest
+  // pool alone is often a concentrated-liquidity pool with few trades: GeckoTerminal then has only ±20 candles in 14 days
+  // (Railway log: "auto-tune PENGU te weinig candles 20"), so auto-tune and coin choice saw nothing.
+  const volOf = x => (x.volume && Number(x.volume.h24)) || 0;
+  const pick = list => { const mx = Math.max(0, ...list.map(liqOf)); return list.filter(x => liqOf(x) >= 0.25 * mx).sort((a, b) => volOf(b) - volOf(a) || liqOf(b) - liqOf(a))[0]; };
+  let best = pick(pairs.filter(x => x.baseToken && String(x.baseToken.address).toLowerCase() === tok));
   if (!best){
-    const q = pairs.filter(x => x.quoteToken && String(x.quoteToken.address).toLowerCase() === tok).sort((a, b) => liqOf(b) - liqOf(a))[0];
+    const q = pick(pairs.filter(x => x.quoteToken && String(x.quoteToken.address).toLowerCase() === tok));
     if (!q) throw new Error('geen pool met dit token: ' + tokenAddress);
     best = Object.assign({}, q, { baseToken: q.quoteToken, quoteToken: q.baseToken, inverted: true });
   }
@@ -1732,7 +1737,7 @@ async function start(){
   // keeps the lessons fresh, and keeps a free Supabase project awake (it pauses after a week without activity)
   if (scout.cfg.on){
     const every = Math.max(5 * 60000, tfSeconds() * 1000);
-    console.log('Oefen-modus AAN:', scout.cfg.coins, 'coins (' + scout.cfg.perRound + ' per ronde) · elke', every / 60000, 'min · nep-inzet', scout.cfg.sol, 'SOL' + (cloud.cfg.on ? ' · naar cloud-geheugen' : ' · (cloud-geheugen uit: alleen tellen)'));
+    console.log('Oefen-modus AAN:', scout.cfg.coins, 'coins' + (scout.cfg.coinsWant > scout.cfg.coins ? ' (van ' + scout.cfg.coinsWant + ': elke coin moet minstens elk uur bekeken worden, PAPER_MAX_LOOK_MIN)' : '') + ' (' + scout.cfg.perRound + ' per ronde) · elke', every / 60000, 'min · nep-inzet', scout.cfg.sol, 'SOL' + (cloud.cfg.on ? ' · naar cloud-geheugen' : ' · (cloud-geheugen uit: alleen tellen)'));
     const scoutTick = async () => {
       try {
         const n = await scout.round(), v = scout.vpNewLast();
@@ -1807,6 +1812,6 @@ if (require.main === module){
   process.on('SIGINT', () => shutdown('SIGINT'));
   start();
 }
-module.exports = { tgParts, anchorBars, nightReportText, heartbeatText, logSkip, skipLog, watchdogLimit, _journal: () => journal, runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
+module.exports = { fetchBestPair, tgParts, anchorBars, nightReportText, heartbeatText, logSkip, skipLog, watchdogLimit, _journal: () => journal, runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
   pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
   copy, cloud, scout, buyMeta, chooseTuned, gtThrottle, gtCalls, SCOUT_PER_ROUND, cleanBars, tuneGrid, growth, statusData, preBuyChecks, rugCheck, refreshMarket, get market(){ return market; }, onHuntSignal, huntText, get huntLog(){ return huntLog; }, get huntOpen(){ return huntOpen; }, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };

@@ -40,11 +40,15 @@ function createScout(o){
   const n = (k, f) => { const v = Number(env[k]); return env[k] != null && env[k] !== '' && Number.isFinite(v) ? v : f; };
   const tfSec = (() => { const [u, a] = String(o.timeframe || 'minute:5').split(':'); return ({ second: 1, minute: 60, hour: 3600, day: 86400 }[u] || 60) * (Number(a) || 1); })();
   const defCoins = tfSec >= 900 ? 300 : tfSec >= 300 ? 100 : 30;
-  const coinsN = Math.max(1, Math.min(500, Math.floor(n('PAPER_COINS', defCoins))));
+  const coinsWant = Math.max(1, Math.min(500, Math.floor(n('PAPER_COINS', defCoins))));
+  // 13-10e: every coin must be looked at at least every PAPER_MAX_LOOK_MIN (60) minutes. Railway showed 300 coins at 33 per round on
+  // 15m candles = each coin only every ±2,3 h, so (with honest fills) almost every signal was hours old. 0 = no cap.
+  const perRoundWant = Math.max(1, Math.floor(n('PAPER_PER_ROUND', o.perRound || coinsWant))), lookMin = Math.max(0, n('PAPER_MAX_LOOK_MIN', 60));
+  const coinsN = lookMin > 0 ? Math.min(coinsWant, Math.max(perRoundWant, perRoundWant * Math.floor(lookMin * 60 / tfSec))) : coinsWant;
   const cfg = {
     on: !['0', 'false'].includes(String(env.PAPER_SCOUT || '1').toLowerCase()),
-    coins: coinsN,
-    perRound: Math.max(1, Math.floor(n('PAPER_PER_ROUND', o.perRound || coinsN))),   // coins looked at per round (GeckoTerminal budget)
+    coins: coinsN, coinsWant,
+    perRound: perRoundWant,   // coins looked at per round (GeckoTerminal budget)
     sol: n('PAPER_SOL', n('TRADE_AMOUNT_SOL', 0.05)),   // same stake as the real bot, so the fees in % match
     minLiq: n('PAPER_MIN_LIQ', 50000),
     repickH: Math.max(0.5, n('PAPER_REPICK_H', coinsN > 50 ? 6 : 2)),
