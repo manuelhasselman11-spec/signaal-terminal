@@ -1599,7 +1599,9 @@
         await sleep(Math.min(gtBlockedUntil - now, 3000)); continue;
       }
       while (gtCalls.length && now - gtCalls[0] > 60000) gtCalls.shift();
-      if (gtCalls.length < GT_PER_MIN) break;
+      // 13-10c: ook mission control (andere tabbladen) telt mee — samen nooit boven de gratis limiet
+      let shared = 0; try { shared = JSON.parse(localStorage.getItem('nd.gtcalls') || '[]').filter(t => now - t < 60000).length; } catch (_){}
+      if (Math.max(gtCalls.length, shared) < GT_PER_MIN) break;
       gtWaiting = true; updateGtNote();
       const waitMs = 60000 - (now - gtCalls[0]) + 50;
       gtWaitListeners.forEach(fn => { try { fn(Math.ceil(waitMs / 1000)); } catch (_){} });
@@ -1613,6 +1615,7 @@
       if (gap < 700) await sleep(700 - gap);
       if (isCurrent && !isCurrent()) throw staleErr();
       gtCalls.push(Date.now());
+      try { const a = JSON.parse(localStorage.getItem('nd.gtcalls') || '[]').filter(t => Date.now() - t < 60000); a.push(Date.now()); localStorage.setItem('nd.gtcalls', JSON.stringify(a.slice(-80))); } catch (_){}
       let res;
       try { res = await fetchWithTimeout(url, undefined, ms); }
       catch (e){
