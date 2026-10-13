@@ -14,28 +14,27 @@ const TYPES = {
   '.png': 'image/png',
   '.ico': 'image/x-icon'
 };
+// 13-10c: never let the browser keep an old page or engine (that showed version 11-10c after an upload)
+const NO_CACHE = { 'Cache-Control': 'no-cache, no-store, must-revalidate', Pragma: 'no-cache', Expires: '0' };
+
+function send(res, file, status){
+  fs.readFile(file, (err, data) => {
+    if (err){ res.writeHead(404, Object.assign({ 'Content-Type': 'text/plain; charset=utf-8' }, NO_CACHE)).end('Niet gevonden'); return; }
+    res.writeHead(status || 200, Object.assign({ 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' }, NO_CACHE)).end(data);
+  });
+}
 
 const server = http.createServer((req, res) => {
   const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
   let filePath = path.join(ROOT, urlPath === '/' ? 'index.html' : urlPath);
-  if (!filePath.startsWith(ROOT)) {
-    res.writeHead(403).end('Forbidden');
-    return;
-  }
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      filePath = path.join(ROOT, 'index.html');
-      fs.readFile(filePath, (err2, html) => {
-        if (err2) {
-          res.writeHead(404).end('Not found');
-          return;
-        }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(html);
-      });
-      return;
-    }
-    const ext = path.extname(filePath);
-    res.writeHead(200, { 'Content-Type': TYPES[ext] || 'application/octet-stream' }).end(data);
+  if (!filePath.startsWith(ROOT)) { res.writeHead(403).end('Forbidden'); return; }
+  fs.stat(filePath, (err, st) => {
+    if (!err && st.isFile()) return send(res, filePath);
+    // /mission → mission.html
+    if (!path.extname(filePath) && fs.existsSync(filePath + '.html')) return send(res, filePath + '.html');
+    // a missing file WITH an extension (e.g. /mission.html before the upload) is a real 404, never the home page in disguise
+    if (path.extname(filePath)) return send(res, path.join(ROOT, '__missing__'), 404);
+    send(res, path.join(ROOT, 'index.html'));
   });
 });
 
