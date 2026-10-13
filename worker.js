@@ -34,6 +34,11 @@ const { patternsAt, patternScore, marketFilterFrom, PATTERN_NAMES, PATTERN_BAD }
 const { createCopy } = require('./copyTrade');
 const { createCloud } = require('./cloudMemory');
 const { createScout, GROUPS } = require('./paperScout');
+const { runnerParams, runnerTrades } = require('./runner');
+const VPS = require('./vpStrategies');
+const VPL = require('./volumeProfile');
+const { createLabTrack } = require('./labTrack');
+const { createAuditor, rpcClient } = require('./auditor');
 const cloud = createCloud();
 const buyMeta = new Map();   // mint -> { kind, source, liq, buyTime }: what we knew when buying, for the cloud memory
 const TOKEN_LIST = (process.env.TOKEN_ADDRESS || '')
@@ -45,6 +50,7 @@ const POLL_MS = Math.max(10000, Number(process.env.POLL_MS) || 30000);
 const STOPWATCH_MS = process.env.STOPWATCH_MS === '0' ? 0 : Math.max(2000, Number(process.env.STOPWATCH_MS) || 5000);
 const TG_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const TG_CHAT = (process.env.TELEGRAM_CHAT_ID || '').trim();
+const BOT_VERSION = '13-10b';   // shown in /status and the startup log — compare with the website version
 
 const chainMap = {
   solana: 'solana', ethereum: 'eth', bsc: 'bsc', base: 'base',
@@ -391,14 +397,30 @@ function fmtPrice(n) {
   return n.toPrecision(4);
 }
 
+/** Telegram refuses messages over 4096 characters (silently lost): split long texts at line breaks into parts of ≤ 4000 */
+function tgParts(text){
+  const t = String(text == null ? '' : text), out = [];
+  if (t.length <= 4000) return [t];
+  let cur = '';
+  for (const line of t.split('\n')){
+    for (let k = 0; k < line.length || k === 0; k += 4000){
+      const piece = line.slice(k, k + 4000);
+      if (cur && cur.length + piece.length + 1 > 4000){ out.push(cur); cur = ''; }
+      cur += (cur ? '\n' : '') + piece;
+      if (!line.length) break;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
 async function notify(text) {
-  console.log(new Date().toISOString(), text.replace(/\n/g, ' | '));
+  console.log(new Date().toISOString(), String(text).replace(/\n/g, ' | '));
   if (!TG_TOKEN || !TG_CHAT) return;
-  try {
+  for (const part of tgParts(text)) try {
     const res = await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TG_CHAT, text, disable_web_page_preview: true })
+      body: JSON.stringify({ chat_id: TG_CHAT, text: part, disable_web_page_preview: true })
     });
     if (!res.ok) console.error('Telegram fout', res.status, await res.text());
   } catch (e){ console.error('Telegram fout', e.message); }
@@ -515,6 +537,18 @@ async function preBuyChecks(mint, meta){
   return { ok: true, stake, notes };
 }
 
+/** candles per coin anchored at the first look: keep the older (final) candles, take everything from the new window */
+function anchorBars(c, bars){
+  const old = c.barsAll, first = bars[0].time;
+  let all = bars;
+  if (old && old.length && old[old.length - 1].time >= first && old[0].time <= first){
+    let k = old.length; while (k > 0 && old[k - 1].time >= first) k--;
+    all = old.slice(0, k).concat(bars);
+  }
+  if (all.length > 2000) all = all.slice(-1000);
+  c.barsAll = all;
+  return all;
+}
 async function tickOne(token) {
   const [unit, agg] = TIMEFRAME.split(':');
   const c = coin(token);
@@ -522,11 +556,15 @@ async function tickOne(token) {
     c.ctx = await fetchBestPair(token);
     if (!c.announced){ c.announced = true; await notify('Watch · ' + infoOf(c, token).symbol + ' · ' + TIMEFRAME); }
   }
-  const bars = await fetchOHLCV(c.ctx.network, c.ctx.poolAddress, unit, agg, token);
-  if (bars.length < 60) {
-    console.log(token.slice(0, 6), 'te weinig candles', bars.length);
+  const fetched = await fetchOHLCV(c.ctx.network, c.ctx.poolAddress, unit, agg, token);
+  if (fetched.length < 60) {
+    console.log(token.slice(0, 6), 'te weinig candles', fetched.length);
     return [];
   }
+  // 13-10a: candles anchored at the first tick (new candles are ADDED, the 300-candle window no longer slides). A sliding window
+  // can shift the strategy's chain of trades: the engine then "forgets" a real open position (→ needless SYNC sell) or sees a
+  // position that never existed (→ a real BUY is missed). Measured on the backtest coins: 37 % of replayed trades were such ghosts.
+  const bars = anchorBars(c, fetched);
   // new settings from the auto-tuner are only switched in while the bot has no open position on this coin
   if (c.pendingParams && !live.isOpen(token)){
     c.params = c.pendingParams; c.pendingParams = null; c.first = true;   // first tick with new settings = history only
@@ -556,6 +594,9 @@ async function tickOne(token) {
     return [];
   }
   if (stale) console.log(tag, stale, 'oud signaal/signalen genegeerd (verschoven candle-venster)');
+  // signals the strategy filters skipped on candles that just closed (for the night report)
+  for (const sk of (res.skipped || [])){ if (sk.time < formingTime && c.cutoffPrev != null && sk.time >= c.cutoffPrev && !c.seen.has('sk' + sk.time)){ c.seen.add('sk' + sk.time); logSkip('filter: ' + String(sk.why).replace(/ \(.*$/, '').replace(/^patroon:.*/, 'patroon')); } }
+  c.cutoffPrev = formingTime;
   for (const e of fresh) {
     await notify([tag, e.type, e.src ? '(' + e.src + ')' : '', '@ $' + fmtPrice(e.price)].filter(Boolean).join(' '));
   }
@@ -566,11 +607,11 @@ async function tickOne(token) {
       todo = todo.filter(e => e.type !== 'BUY');
     }
     if (exitOnly(token) && todo.some(e => e.type === 'BUY')){
-      console.log(tag, 'BUY overgeslagen: coin staat niet meer op de lijst (alleen nog verkopen)');
+      console.log(tag, 'BUY overgeslagen: coin staat niet meer op de lijst (alleen nog verkopen)'); logSkip('coin van de lijst');
       todo = todo.filter(e => e.type !== 'BUY');
     }
     if ((c.livePauseUntil || 0) > Date.now() && todo.some(e => e.type === 'BUY')){
-      console.log(tag, 'BUY overgeslagen: pauze na verliezen in echte trades tot', new Date(c.livePauseUntil).toISOString());
+      console.log(tag, 'BUY overgeslagen: pauze na verliezen in echte trades tot', new Date(c.livePauseUntil).toISOString()); logSkip('pauze na verliezen');
       todo = todo.filter(e => e.type !== 'BUY');
     }
     if (c.paused && todo.some(e => e.type === 'BUY')){
@@ -588,11 +629,11 @@ async function tickOne(token) {
         const mk = token + '|' + ok.key, last = blockMsgAt.get(mk) || 0;
         if (Date.now() - last > 6 * 3600000){ blockMsgAt.set(mk, Date.now()); await notify('🧠 ' + tag + ': BUY overgeslagen door het cloud-geheugen — ' + ok.reason + '. (Zo leert de bot van fouten; /geheugen voor alle lessen. Deze melding komt max. 1× per 6 uur.)'); }
         else console.log(tag, 'BUY overgeslagen (geheugen):', ok.reason);
-        todo = todo.filter(e => e.type !== 'BUY');
+        todo = todo.filter(e => e.type !== 'BUY'); logSkip('cloud-geheugen');
       }
       else {
         const pre = await preBuyChecks(token, meta);
-        if (!pre.ok){ await notify('🛡️ ' + tag + ': BUY overgeslagen — ' + pre.why); todo = todo.filter(e => e.type !== 'BUY'); }
+        if (!pre.ok){ logSkip('koop-check'); await notify('🛡️ ' + tag + ': BUY overgeslagen — ' + pre.why); todo = todo.filter(e => e.type !== 'BUY'); }
         else { c.stakeConf = pre.stake; buyMeta.set(token, Object.assign(meta, { stake: pre.stake })); if (pre.notes.length) console.log(tag, 'koop-check:', pre.notes.join(' · ')); }
       }
     }
@@ -615,6 +656,7 @@ async function syncOne(token, c){
 
 // Stop-watch: between candle refreshes, check the live price every few seconds against the strategy's stop.
 const TP_WATCH = flag('TP_WATCH', true);
+const LIQ_DROP_PCT = num('LIQ_DROP_PCT', 30);
 async function stopWatchTick(){
   if (!live.liveEnabled() || !STOPWATCH_MS) return;
   const open = activeTokens().filter(t => { const c = coins.get(t); return c && c.engine && c.engine.inPos && c.engine.stop > 0 && live.isOpen(t); });
@@ -628,6 +670,20 @@ async function stopWatchTick(){
       .sort((a, b) => ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0));
     const price = pairs.length ? Number(pairs[0].priceUsd) : NaN;
     if (!(price > 0)) continue;
+    // emergency exit (deel 4): the pool's liquidity suddenly fell by more than LIQ_DROP_PCT (30%) since we hold it → sell now
+    const liqNow = pairs.length && pairs[0].liquidity ? Number(pairs[0].liquidity.usd) : NaN;
+    if (liqNow > 0){
+      if (!(c.liqRef > 0) || c.liqRefOpenAt !== live.openedAt(token)){ c.liqRef = liqNow; c.liqRefOpenAt = live.openedAt(token); }
+      c.liqRef = Math.max(c.liqRef, liqNow);
+      const drop = 1 - liqNow / c.liqRef;
+      if (LIQ_DROP_PCT > 0 && drop * 100 >= LIQ_DROP_PCT && Date.now() - (c.lastLiqFire || 0) > 60000){
+        c.lastLiqFire = Date.now();
+        await notify('🚨 Noodstop ' + infoOf(c, token).symbol + ': liquiditeit van de pool viel ' + Math.round(drop * 100) + '% (van $' + Math.round(c.liqRef / 1000) + 'K naar $' + Math.round(liqNow / 1000) + 'K) — alles verkopen');
+        live.blockMint(token, 'liquiditeit viel ' + Math.round(drop * 100) + '% terwijl de bot erin zat (' + new Date().toISOString().slice(0, 10) + ')');   // never buy this coin again
+        await live.handleLiveEvents([{ type: 'EXIT', price, why: 'liquiditeit weg' }], token, infoOf(c, token));
+        continue;
+      }
+    }
     // profit targets: take them the moment the live price gets there, don't wait for the candle to close
     if (TP_WATCH && price > c.engine.stop){
       const e = c.engine, p = paramsFor(c);
@@ -899,7 +955,24 @@ function stakeMult(){
   for (let k = journal.length - 1; k >= 0 && journal[k].pnlSol <= 0; k--) streak++;
   return streak >= 2 ? 0.5 : 1;
 }
+// 🔎 auditor (13-10a): every closed live trade is recomputed from the chain (read-only). > 1 % apart = stop buying + alarm.
+const auditor = createAuditor({ rpc: rpcClient(process.env.RPC_URL || 'https://api.mainnet-beta.solana.com'), maxStakeSol: Math.max(0.001, num('TRADE_AMOUNT_SOL', 0.01)) * 1.0001 });
+function auditLater(t){
+  if (!flag('AUDITOR', true)) return;
+  const tm = setTimeout(async () => {
+    try {
+      const r = await auditor.auditLive(t);
+      t.audit = r.status;
+      if (r.status === 'ALARM'){
+        manualStop = true; saveState();
+        notify('🚨 Auditor-alarm: ' + (t.symbol || t.mint.slice(0, 6)) + ' — logboek ' + Number(t.pnlSol).toFixed(5) + ' SOL, chain ' + (r.chainPnl != null ? r.chainPnl.toFixed(5) : '?') + ' SOL' + (r.notes.length ? ' (' + r.notes.join('; ') + ')' : '') + '. Nieuwe buys staan UIT tot je /hervat stuurt. Kijk eerst /audit.');
+      } else if (r.status === 'AFWIJKING') console.log('auditor: kleine afwijking', t.symbol, r.diffPct.toFixed(2) + '%');
+    } catch (e){ console.error('auditor', e.message); }
+  }, 45000);
+  if (tm.unref) tm.unref();
+}
 live.setJournal(t => {
+  if (!t.test) auditLater(t);
   if (t.test){ console.log('test/handmatige verkoop', t.symbol, t.pnlSol.toFixed(5), 'SOL (telt niet mee in het rapport)'); return; }   // /testtrade or /verkoop: no stake halving, no loss limit, no memory
   journal.push(t);
   const meta = buyMeta.get(t.mint) || {};
@@ -975,6 +1048,7 @@ function readyForReal(tag, liq){
   if (r.ready) return true;
   if (Date.now() - readyWarnAt > 3600000){ readyWarnAt = Date.now(); notify('⏳ ' + tag + ': echte BUY overgeslagen — de oefen-modus heeft ' + (r.group ? 'voor coins met liquiditeit ' + r.group : '') + ' nog niet bewezen dat het winst geeft (' + r.n + ' van ' + r.goal + ' trades' + (r.n ? ', ' + (r.pnl >= 0 ? '+' : '') + r.pnl.toFixed(4) + ' SOL' : '') + '). Zie /oefen. (LIVE_WAIT_READY=0 zet deze bescherming uit.)'); }
   else console.log(tag, 'BUY overgeslagen: wacht op oefen-gereedheid');
+  logSkip('oefen nog niet klaar');
   return false;
 }
 // ---------- 🎯 jager: looks at every practice coin after each candle; a fresh BUY with a good pattern and a clean memory may become a real trade ----------
@@ -1050,11 +1124,46 @@ function huntText(){
 }
 // how many practice coins fit in one round: the free GeckoTerminal budget minus what real trading needs, with some margin
 const SCOUT_PER_ROUND = Math.max(5, Math.floor(Math.max(1, num('GT_PER_MIN', 9) - Math.max(0, num('GT_RESERVE', 3))) * Math.max(5, tfSeconds() / 60) * 0.75));
+// SOL price in euro for the daily goal (CoinGecko, every 10 min; the goal simply waits when the price is unknown)
+const solEur = { v: 0, usd: 0, t: 0, err: '' };
+async function refreshSolEur(){
+  try {
+    const j = await fetchJson('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=eur,usd', 8000, 2);
+    const v = Number(j && j.solana && j.solana.eur), u = Number(j && j.solana && j.solana.usd);
+    if (u > 0) solEur.usd = u;
+    if (v > 0){ solEur.v = v; solEur.t = Date.now(); solEur.err = ''; }
+  } catch (e){ solEur.err = e.message; }
+  return solEurNow();
+}
+function solEurNow(){ return solEur.v > 0 && Date.now() - solEur.t < 6 * 3600000 ? solEur.v : null; }
+live.setSolEur(solEurNow);
+const GOAL_EUR = Math.max(0, num('DAILY_GOAL_EUR', 20));
+// 📊 volume-profile strategies (12-10c): practice only (VP_PRACTICE=0 = off). Settings: VP_* variables (see vpStrategies.js)
+function vpForScout(bars, x){
+  const q = VPS.vpParams(process.env, tfSeconds());
+  // cost: the coin's measured Jupiter round trip + the fixed fees as % of the stake (VP practice counts fixed fees inside the %), else the setting
+  const r = VPS.vpRun(bars, q, { cost: x.jup != null ? x.jup + feePct() : getParams().costPct, liq: x.liq, created: x.created, key: x.mint });
+  return { trades: r.trades, explain: VPS.vpExplain(r.P, q, bars.length - 2) };   // the last candle is still forming
+}
+// 🧪 lab (13-10a): 27 strategy agents in paper, through the cage, hourly report (LAB_PRACTICE=0 = off)
+// lab cost: proportional only (the fixed SOL fees are counted separately, once); per coin the measured Jupiter round trip replaces this guess
+const labTrack = createLabTrack({ env: process.env, tfSec: tfSeconds(), cost: () => num('LAB_COST_PCT', 1), solEur: () => solEurNow(), solUsd: () => solEur.usd || null });
 const scout = createScout({
   timeframe: TIMEFRAME, perRound: SCOUT_PER_ROUND, runEngine, getParams: () => Object.assign(getParams(), marketParam()), fetchBestPair,
   // practice calls are low priority: they never take the GeckoTerminal calls your real coins need
   fetchOHLCV: (n, p, u, a, t) => fetchOHLCV(n, p, u, a, t, true), fetchHistory: (n, p, u, a, f, t) => fetchHistory(n, p, u, a, f, t, true),
+  // last ±300 swaps of a pool as [timeSec, buy 1/0, usd, price, wallet] (lab order-flow agents, LAB_FLOW_COINS)
+  fetchTrades: async (network, pool, mint) => {
+    const j = await fetchJson('https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + pool + '/trades?token=' + encodeURIComponent(mint), 12000, 2, true);
+    return VPL.vpTradesFromGecko(j).map(x => [Math.floor(x.time), x.side === 'buy' ? 1 : 0, +x.usd.toFixed(2), x.price, String(x.wallet || '').slice(0, 10)]);
+  },
   tradesFromEvents, candidates: scoutCandidates,
+  // 🏃 runner strategy: practice only (RUNNER_PRACTICE=0 = off) — collects proof before it may ever trade for real
+  runner: flag('RUNNER_PRACTICE', true) ? (bars => runnerTrades(bars, runnerParams(tfSeconds(), process.env), getParams().costPct)) : null,
+  vp: flag('VP_PRACTICE', true) ? vpForScout : null, vpNames: VPS.VP_NAMES, solEur: solEurNow, goalEur: GOAL_EUR,
+  lab: labTrack.cfg.on ? labTrack : null,
+  // per-coin cost for the lab: two Jupiter quotes (read-only, nothing signed), at most once per coin per 6 h (LAB_JUP_COST=0 = off)
+  jupCost: flag('LAB_JUP_COST', true) ? (mint => live.roundTripPct(mint, num('TRADE_AMOUNT_SOL', 0.01))) : null,
   check: c => cloud.check(c, null, { quiet: true }),
   onSignal: s => onHuntSignal(s),
   huntGate: s => huntGate(s),
@@ -1065,7 +1174,7 @@ function saveState(){
   if (!STATE_FILE) return;
   try {
     const o = { v: 1, savedAt: Date.now(), manualStop, autoTokens, addedTokens, removedTokens, lossBaseline, journal: journal.slice(-500), live: live.exportState(), lastReportDay, coins: {},
-      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) }, copy: copy.exportState(), scout: scout.exportState(), huntOpen, buyMeta: Object.fromEntries(buyMeta) };
+      kansen: { w: ks.w, b: ks.b, pending: ks.pending.slice(-800), done: ks.done.slice(-2000) }, copy: copy.exportState(), scout: scout.exportState(), lab: labTrack.exportState(), huntOpen, buyMeta: Object.fromEntries(buyMeta) };
     coins.forEach((c, t) => { o.coins[t] = { params: c.params, pendingParams: c.pendingParams, paused: c.paused, tunedAt: c.tunedAt, livePauseUntil: c.livePauseUntil || 0, livePauseAfter: c.livePauseAfter || 0 }; });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(o));
@@ -1084,6 +1193,7 @@ function loadState(){
     live.importState(o.live);
     copy.importState(o.copy);
     scout.importState(o.scout);
+    labTrack.importState(o.lab);
     huntOpen = Array.isArray(o.huntOpen) ? o.huntOpen : [];
     huntOpen.forEach(m => coin(m));   // keep managing what the hunter bought before the restart
     Object.entries(o.buyMeta || {}).forEach(([k, v]) => buyMeta.set(k, v));
@@ -1118,13 +1228,17 @@ function statusData(){
   return {
     v: 1, live: live.liveEnabled(), stopped: manualStop, tf: TIMEFRAME, market: MARKET_FILTER ? (market.state || 'onbekend') : 'uit',
     coins: activeTokens().map(t => { const c = coins.get(t) || {}; return { sym: infoOf(coin(t), t).symbol, mint: t, pos: live.isOpen(t), inTrade: !!(c.engine && c.engine.inPos), paused: !!c.paused, exitOnly: exitOnly(t) }; }),
-    oefen: { on: scout.cfg.on, coins: Object.values(st.coins).map(c => c.symbol), seen: st.coinsSeen, all: stat(st.stats), fwd: stat(st.fwd), ok: stat(st.ok), hunt: stat(st.hunt), hist: st.hist,
+    oefen: { on: scout.cfg.on, coins: Object.values(st.coins).map(c => c.symbol), seen: st.coinsSeen, all: stat(st.stats), fwd: stat(st.fwd), ok: stat(st.ok), hunt: stat(st.hunt), fresh: st.fresh ? stat(st.fresh) : null, freshHunt: st.freshHunt ? stat(st.freshHunt) : null, hist: st.hist, runner: st.runner ? stat(st.runner) : null, runnerBest: st.runnerBest && st.runnerBest.ret > 0 ? { pct: Math.round(st.runnerBest.ret * 100), sym: st.runnerBest.symbol } : null,
+      vp: scout.vpText ? Object.fromEntries(Object.entries(st.vp || {}).map(([k, x]) => [k, Object.assign(stat(x), { name: VPS.VP_NAMES[k] || k })])) : null,
+      vpSig: (st.vpSig || []).slice(0, 8).map(x => ({ s: VPS.VP_NAMES[x.s] || x.s, sym: x.sym, t: x.t, why: x.why })),
       huntReady: (() => { const h = scout.readiness('hunt'); return { pct: h.pct, n: h.n, goal: h.goal, ready: h.ready, bad: h.bad, text: scout.huntReadyText() }; })(),
       ready: { pct: r.pct, n: r.n, goal: r.goal, ready: r.ready, bad: r.bad, text: scout.readyText() },
       groups: GROUPS.map(g => { const x = scout.readiness('ok', g === '50K-250K' ? 100000 : g === '250K-1M' ? 500000 : 2e6); return { g, n: x.n, goal: x.goal, pnl: +x.pnl.toFixed(4), ready: x.ready, bad: x.bad, unsure: x.unsure, pct: x.pct }; }) },
     jager: { on: HUNT, live: huntLiveAllowed(), open: huntOpen.filter(m => live.isOpen(m)).length, log: huntLog.slice(0, 15).map(x => ({ t: x.t, sym: x.sym, src: x.src, pats: x.pats, ok: x.ok, why: x.why, action: x.action })) },
     echt: { n: journal.length, pnl: +totalPnl().toFixed(5), last: journal.slice(-15).reverse().map(t => ({ t: t.time, sym: t.symbol, pnl: +Number(t.pnlSol).toFixed(5), exit: t.exit })) },
-    kansen: KANSEN ? ksStats().n : 0, wallets: copy.state.wallets.length,
+    kansen: KANSEN ? ksStats().n : 0, wallets: copy.state.wallets.length, lab: labTrack.cfg.on ? labTrack.summary() : null,
+    goal: (() => { const g = live.goalState(), d = scout.day(); return { eur: GOAL_EUR, solEur: g.solEur, live: g.eur == null ? null : +g.eur.toFixed(2), liveSol: +g.pnlSol.toFixed(5), reached: g.reached,
+      paperSol: +(d.ok || 0).toFixed(5), vpSol: +(d.vp || 0).toFixed(5), paperStake: scout.cfg.sol, day: d.key }; })(),
   };
 }
 async function pushDashboard(){ try { await cloud.pushStatus(statusData()); } catch (_){} }
@@ -1274,9 +1388,11 @@ function nlNow(){ const d = new Date(); const parts = new Intl.DateTimeFormat('n
   const g = t => (parts.find(x => x.type === t) || {}).value; return { hour: Number(g('hour')), day: g('year') + '-' + g('month') + '-' + g('day') }; }
 function statusText(){
   const lines = [];
+  lines.push('🤖 Versie ' + BOT_VERSION);
   lines.push((live.liveEnabled() ? '🟢 Live handelen AAN' : '⚪ Live handelen UIT (alleen signalen)') + (manualStop ? ' · ⏸️ gestopt met /stop (geen nieuwe buys)' : ''));
   const d = live._day || {};
   if (live.liveEnabled()) lines.push('Vandaag: ' + (d.buys || 0) + ' buys · resultaat ≈ ' + ((d.pnlSol || 0) >= 0 ? '+' : '') + (d.pnlSol || 0).toFixed(4) + ' SOL' + (stakeMult() < 1 ? ' · inzet tijdelijk ×' + stakeMult() + ' (verliesreeks)' : ''));
+  lines.push(goalLine());
   if (AUTO_COINS) lines.push('Zelf gekozen coins: ' + (autoTokens.length ? autoTokens.map(t => infoOf(coin(t), t).symbol).join(', ') : 'geen (niets overtuigend)'));
   for (const token of activeTokens()){
     const c = coins.get(token);
@@ -1301,11 +1417,37 @@ function statusText(){
   if (copy.state.wallets.length) lines.push('🐋 Wallets volgen: ' + copy.state.wallets.length + ' · stand ' + copy.cfg.mode + ' (meer: /wallets)');
   return lines.join('\n');
 }
-async function tgSend(text){
+function goalLine(){
+  if (!(GOAL_EUR > 0)) return '🎯 Dagdoel uit (DAILY_GOAL_EUR=0)';
+  const g = live.goalState();
+  const real = g.eur == null ? (g.pnlSol >= 0 ? '+' : '') + g.pnlSol.toFixed(4) + ' SOL (euro-koers nog onbekend)' : (g.eur >= 0 ? '+' : '−') + '€' + Math.abs(g.eur).toFixed(2) + ' (' + g.pct + '%)';
+  return '🎯 Dagdoel €' + GOAL_EUR + ': echt geld vandaag ' + (live.liveEnabled() ? real : '— (live uit)') + (g.reached ? ' ✅ gehaald → geen nieuwe buys tot morgen' : '')
+    + (scout.cfg.on ? '\n   ' + scout.goalText().replace(/^🎯 Dagdoel €\d+(\.\d+)? — /, '') : '');
+}
+/** a file in Telegram (the lab's hourly CSV with every trade) */
+async function tgSendDoc(name, content, caption){
   if (!TG_TOKEN || !TG_CHAT) return;
   try {
-    await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TG_CHAT, text, disable_web_page_preview: true }) });
+    const fd = new FormData();
+    fd.append('chat_id', TG_CHAT); if (caption) fd.append('caption', String(caption).slice(0, 1000));
+    fd.append('document', new Blob([content], { type: 'text/csv' }), name);
+    await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendDocument', { method: 'POST', body: fd });
+  } catch (e){ console.error('Telegram bestand fout', e.message); }
+}
+async function labReport(){
+  const r = labTrack.hourly(), p = auditor.auditPaper(labTrack.state.closed.slice(-500));
+  const audits = auditor.results, liveTxt = audits.length ? audits.filter(x => x.status === 'GEVERIFIEERD').length + '/' + audits.length + ' echte trades on-chain geverifieerd' + (audits.some(x => x.status === 'ALARM') ? ' · 🚨 ALARM (zie /audit)' : '') : 'geen echte trades';
+  r.text += '\n🔎 Auditor: ' + liveTxt + ' · paper-controle ' + (p.problems.length ? '⚠️ ' + p.problems.length + ' problemen' : 'ok');
+  try { const ex = live.execState ? live.execState() : null; if (ex && (ex.buy.trades || ex.sell.trades)) r.text += '\n' + live.execText(); } catch (_){}
+  await notify(r.text);
+  if (r.n) await tgSendDoc('lab-' + new Date().toISOString().slice(0, 13).replace('T', '-') + 'u.csv', r.csv, 'Alle ' + r.n + ' lab-trades van dit uur (paper + schaduw)');
+}
+async function tgSend(text){
+  if (!TG_TOKEN || !TG_CHAT) return;
+  for (const part of tgParts(text)) try {
+    const res = await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TG_CHAT, text: part, disable_web_page_preview: true }) });
+    if (res && res.ok === false) console.error('Telegram fout', res.status);
   } catch (e){ console.error('Telegram fout', e.message); }
 }
 async function handleCommand(text){
@@ -1316,13 +1458,19 @@ async function handleCommand(text){
     const m = rawArg.match(/^(add|del)_([1-9A-HJ-NP-Za-km-z]{32,44})$/);
     if (m){ cmd = m[1] === 'add' ? '/coin' : '/weg'; rawArg = m[2]; }
     else if (/^(volg|ontvolg)_([1-9A-HJ-NP-Za-km-z]{32,44})$/.test(rawArg)){ const v = rawArg.split('_'); cmd = '/' + v[0]; rawArg = v[1]; }
-    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets|geheugen|oefen|jager|patronen|opruimen)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
+    else if (/^(stop|hervat|status|rapport|kansen|coinlijst|wallets|geheugen|oefen|jager|patronen|opruimen|vp|doel|lab|labrapport|audit)$/i.test(rawArg)){ cmd = '/' + rawArg.toLowerCase(); rawArg = ''; }
   }
+  if (cmd === '/sellall') cmd = '/verkoopalles';   // English alias (deel 6.4)
   const arg = rawArg.toUpperCase();
   if (cmd === '/coin' || cmd === '/weg' || cmd === '/coinlijst') return coinCommand(cmd, rawArg.trim());
   if (cmd === '/volg' || cmd === '/ontvolg' || cmd === '/wallets'){ const answer = await copy.command(cmd, rawArg); if (cmd !== '/wallets') saveState(); return tgSend(answer); }
   if (cmd === '/geheugen') return tgSend(await cloud.text());
   if (cmd === '/oefen') return tgSend(scout.text());
+  if (cmd === '/vp') return tgSend(scout.vpText());
+  if (cmd === '/lab') return tgSend(labTrack.text());
+  if (cmd === '/audit'){ const p = auditor.auditPaper(labTrack.state.closed); return tgSend(auditor.text() + '\n' + live.execText() + '\n🔎 Paper-controle lab: ' + p.n + ' trades · ' + (p.problems.length ? '⚠️ ' + p.problems.length + ' problemen: ' + p.problems.slice(0, 3).map(x => x.why).join(', ') : 'geen problemen') + '\nStatus: live = GEVERIFIEERD/ONGEVERIFIEERD (on-chain), paper = PAPER (nooit live-winst).'); }
+  if (cmd === '/labrapport') return labReport();
+  if (cmd === '/doel') return tgSend(goalLine() + '\n\nHoe het werkt: zodra de echte winst van vandaag (Nederlandse dag) het doel haalt, koopt de bot niets nieuws meer tot morgen; open posities lopen gewoon af. Het doel maakt de inzet of het risico NOOIT groter. Aanpassen: DAILY_GOAL_EUR in Railway (0 = uit).');
   if (cmd === '/jager') return tgSend(huntText());
   if (cmd === '/patronen') return tgSend(await cloud.patternsText());
   if (cmd === '/dryrun'){
@@ -1379,7 +1527,8 @@ async function handleCommand(text){
   if (cmd === '/stop'){ manualStop = true; saveState(); console.log('Telegram: /stop'); return tgSend('⏸️ Gestopt: geen nieuwe buys meer. Open posities worden nog wel verkocht bij hun stop of doel.\n/hervat = weer kopen · /verkoopalles = alles nu verkopen'); }
   if (cmd === '/hervat'){ manualStop = false; if (MAX_TOTAL_LOSS > 0 && totalPnl() - lossBaseline <= -MAX_TOTAL_LOSS) lossBaseline = totalPnl(); saveState(); console.log('Telegram: /hervat'); return tgSend('▶️ Hervat: de bot mag weer kopen' + (live.liveEnabled() ? '.' : ' (maar live handelen staat UIT in Railway: alleen signalen).')); }
   if (cmd === '/verkoopalles'){
-    const open = activeTokens().filter(t => live.isOpen(t));
+    // every open bot position: your coins, but also the hunter's and copy trades (those are not in the coin list)
+    const open = [...new Set(activeTokens().concat([...live._state.keys()]))].filter(t => live.isOpen(t));
     if (!live.liveEnabled()) return tgSend('Live handelen staat uit — er is niets te verkopen.');
     if (!open.length) return tgSend('De bot heeft geen open posities.');
     if (arg !== 'JA' || Date.now() - sellAllAsked > 120000){
@@ -1388,7 +1537,7 @@ async function handleCommand(text){
     }
     sellAllAsked = 0; manualStop = true; saveState();
     await tgSend('Verkopen… (nieuwe buys staan uit, /hervat om weer te kopen)');
-    for (const t of open){ const c = coin(t); await live.handleLiveEvents([{ type: 'EXIT' }], t, infoOf(c, t)); }
+    for (const t of open){ const c = coins.get(t); await live.handleLiveEvents([{ type: 'EXIT' }], t, c ? infoOf(c, t) : { symbol: t.slice(0, 6) }); }
     return;
   }
   if (cmd === '/tune'){
@@ -1399,7 +1548,7 @@ async function handleCommand(text){
   }
   if (cmd === '/start') return tgSend(statusText() + '\n\nStuur /help voor de commando\'s.');
   if (cmd.startsWith('/'))
-    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/oefen — oefen-trades met nep-geld op andere coins\n/jager — welke kansen de jager vond en of hij koopt\n/patronen — welke chart-patronen winst gaven\n/dryrun <coin> — test het echte koop-pad, alleen gesimuleerd\n/dryrun_verkoop <coin> — verkoop simuleren van een token dat je hebt\n/testtrade — één mini-koop + verkoop met echt geld (± 0.002 SOL kosten) om te bewijzen dat alles werkt\n/verkoop <adres> — alles van één token uit de bot-wallet verkopen\n/opruimen — lege token-accounts sluiten (SOL-huur terug)\n/help — deze lijst');
+    return tgSend('Commando\'s:\n/status — hoe staat de bot ervoor\n/rapport — wat leverde elke coin op\n/kansen — wat de kans-score geleerd heeft\n/coins — opnieuw coins kiezen (AUTO_COINS)\n/stop — geen nieuwe buys (noodstop)\n/hervat — weer kopen\n/verkoopalles — alle bot-posities nu verkopen\n/tune — nu betere instellingen zoeken\n/coin <adres> — coin toevoegen · /weg <adres> — coin weghalen · /coinlijst — welke coins\n/volg <wallet> <naam> — slimme wallet volgen · /ontvolg <wallet> · /wallets — wie volg je en hoe gaat het\n/geheugen — wat de bots samen geleerd hebben (Supabase)\n/oefen — oefen-trades met nep-geld op andere coins\n/vp — volume-profiel-strategieën (alleen oefenen): score per strategie, waarom wel/niet gekocht\n/lab — 29 lab-strategieën (alleen paper): score, schaduwtrades, besluit per agent · /labrapport — uurrapport nu\n/audit — onafhankelijke controle van echte trades op de chain\n/doel — dagdoel (€) en hoe ver de bot vandaag is\n/jager — welke kansen de jager vond en of hij koopt\n/patronen — welke chart-patronen winst gaven\n/dryrun <coin> — test het echte koop-pad, alleen gesimuleerd\n/dryrun_verkoop <coin> — verkoop simuleren van een token dat je hebt\n/testtrade — één mini-koop + verkoop met echt geld (± 0.002 SOL kosten) om te bewijzen dat alles werkt\n/verkoop <adres> — alles van één token uit de bot-wallet verkopen\n/opruimen — lege token-accounts sluiten (SOL-huur terug)\n/help — deze lijst');
 }
 const MAX_COINS = Math.max(1, Math.floor(num('MAX_COINS', 6)));
 async function coinCommand(cmd, addr){
@@ -1505,10 +1654,63 @@ function nextTickDelay(nowMs){
   const next = marks.find(m => m > sinceClose + 500);
   return Math.max(5000, next - sinceClose);
 }
+let lastLoopAt = Date.now();
 async function loop() {
+  lastLoopAt = Date.now();
   try { await tick(); } catch (err) { console.error('tick fout', err.message); }
+  lastLoopAt = Date.now();
   setTimeout(loop, nextTickDelay(Date.now()));
 }
+// watchdog (deel 6.1): if the main loop hangs (a network call that never returns), restart the whole process —
+// Railway starts it again, and after a restart the bot first re-reads the wallet before it trades
+const WATCHDOG = flag('WATCHDOG', true);
+function watchdogLimit(){ return Math.max(2 * 60000, nextTickDelay(Date.now()) + 2 * tfSeconds() * 1000 + 3 * 60000); }
+function watchdogCheck(){
+  if (!WATCHDOG) return;
+  const idle = Date.now() - lastLoopAt;
+  if (idle > watchdogLimit()){
+    console.error('WATCHDOG: hoofdlus doet al ' + Math.round(idle / 60000) + ' min niets — herstarten');
+    saveState();
+    notify('🔁 Watchdog: de bot hing al ' + Math.round(idle / 60000) + ' min en herstart zichzelf. Na de herstart leest hij eerst de wallet.').finally(() => process.exit(1));
+    setTimeout(() => process.exit(1), 10000);
+  }
+}
+// hourly heartbeat + night report at 08:00 (deel 6.3)
+const HEARTBEAT = flag('HEARTBEAT', true), NIGHT_REPORT = flag('NIGHT_REPORT', true);
+let lastBeatHour = '', lastNightDay = '';
+function journalSince(t){ return journal.filter(x => Number(x.time) >= t); }
+async function heartbeatTick(){
+  if (!TG_TOKEN || !TG_CHAT) return;
+  const n = nlNow(), key = n.day + ' ' + n.hour;
+  if (NIGHT_REPORT && n.hour === 8 && lastNightDay !== n.day){
+    lastNightDay = n.day; lastBeatHour = key;
+    return tgSend(nightReportText(Date.now()));
+  }
+  if (!HEARTBEAT || lastBeatHour === key) return;
+  lastBeatHour = key;
+  let bal = null;
+  if (live.liveEnabled()){ try { bal = await live.walletSol(); } catch (_){} }
+  await tgSend(heartbeatText(n, bal));
+}
+function nightReportText(now){
+  const from = now - 8 * 3600000, list = journalSince(from);
+  const sum = list.reduce((a, x) => a + (Number(x.pnlSol) || 0), 0);
+  const best = list.slice().sort((a, b) => b.pnlSol - a.pnlSol)[0], worst = list.slice().sort((a, b) => a.pnlSol - b.pnlSol)[0];
+  const sk = Object.entries(skipLog.reduce((o, x) => { if (x.t >= from) o[x.why] = (o[x.why] || 0) + 1; return o; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const sg = x => (x >= 0 ? '+' : '') + x.toFixed(4);
+  return '🌅 Nachtrapport (00–08 u)\n' + (list.length ? list.length + ' trades · netto ' + sg(sum) + ' SOL\nBeste: ' + best.symbol + ' ' + sg(best.pnlSol) + ' · slechtste: ' + worst.symbol + ' ' + sg(worst.pnlSol) : 'Geen echte trades vannacht.')
+    + (scout.cfg.on ? '\nOefen-trades vannacht: ' + scout.tradesSince(from) : '')
+    + (sk.length ? '\nOvergeslagen kansen: ' + sk.map(([w, k]) => k + '× ' + w).join(' · ') : '\nGeen overgeslagen kansen gemeld.');
+}
+function heartbeatText(n, bal){
+  const today = journal.filter(x => nlDayOf(x.time) === n.day), sum = today.reduce((a, x) => a + (Number(x.pnlSol) || 0), 0);
+  return '💓 Bot draait · ' + n.hour + ':00 · vandaag ' + today.length + ' trade(s), ' + (sum >= 0 ? '+' : '') + sum.toFixed(4) + ' SOL'
+    + (bal != null ? ' · saldo ' + bal.toFixed(4) + ' SOL' : '') + (live.liveEnabled() ? '' : ' · live UIT') + (manualStop ? ' · ⏸️ /stop' : '');
+}
+function nlDayOf(t){ return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Amsterdam' }).format(new Date(Number(t))); }
+// skipped chances (for the night report): why a buy signal did not become a trade
+const skipLog = [];
+function logSkip(why){ skipLog.push({ t: Date.now(), why: String(why).slice(0, 60) }); if (skipLog.length > 2000) skipLog.splice(0, skipLog.length - 2000); }
 
 async function start(){
   const restored = loadState();
@@ -1518,9 +1720,10 @@ async function start(){
   }
   console.log(STATE_FILE ? (restored ? 'Geheugen geladen uit ' + STATE_FILE : 'Geheugen: nieuw bestand ' + STATE_FILE) : 'Geheugen: UIT (geen Railway Volume) — /stop, gekozen coins en instellingen worden vergeten bij een herstart');
   console.log('Kijkmoment:', SMART_POLL && tfSeconds() > 60 ? 'vlak na elke ' + TIMEFRAME + '-candle (+ tweede blik na 90 s)' : 'elke ' + POLL_MS / 1000 + ' s', '· winst-wachter:', TP_WATCH ? 'aan' : 'uit');
-  console.log('Signaal worker start. Tokens=', TOKEN_LIST.length ? TOKEN_LIST.length : '(LEEG)', TOKEN_LIST.map(t => t.slice(0, 6)).join(','), 'tf=', TIMEFRAME, 'poll=', POLL_MS + 'ms', 'stop-wachter=', STOPWATCH_MS ? STOPWATCH_MS + 'ms' : 'uit');
+  console.log('Signaal worker versie', BOT_VERSION, 'start. Tokens=', TOKEN_LIST.length ? TOKEN_LIST.length : '(LEEG)', TOKEN_LIST.map(t => t.slice(0, 6)).join(','), 'tf=', TIMEFRAME, 'poll=', POLL_MS + 'ms', 'stop-wachter=', STOPWATCH_MS ? STOPWATCH_MS + 'ms' : 'uit');
   try { await notify(await live.startupReport()); } catch (e){ console.error('LIVE start-fout:', e.message); }
   if (cloud.cfg.on){ setTimeout(pushDashboard, 60000); setInterval(pushDashboard, 3 * 60000); }
+  if (GOAL_EUR > 0){ refreshSolEur().then(v => console.log('Dagdoel €' + GOAL_EUR + ' · SOL ≈ €' + (v ? v.toFixed(2) : '? (' + solEur.err + ')'))); setInterval(() => { refreshSolEur().catch(() => {}); }, 10 * 60000); }
   if (MARKET_FILTER){ await refreshMarket(true); console.log('SOL-marktfilter AAN · SOL nu:', market.state || 'onbekend'); setInterval(() => { refreshMarket(false).catch(() => {}); }, 5 * 60000); }
   if (cloud.cfg.on){
     try { await cloud.refresh(true); console.log('Cloud-geheugen AAN:', cloud.lessons.size, 'lessen geladen · bot-naam', cloud.cfg.bot, '· blokkeren:', cloud.cfg.learn ? 'aan' : 'uit'); }
@@ -1531,7 +1734,13 @@ async function start(){
     const every = Math.max(5 * 60000, tfSeconds() * 1000);
     console.log('Oefen-modus AAN:', scout.cfg.coins, 'coins (' + scout.cfg.perRound + ' per ronde) · elke', every / 60000, 'min · nep-inzet', scout.cfg.sol, 'SOL' + (cloud.cfg.on ? ' · naar cloud-geheugen' : ' · (cloud-geheugen uit: alleen tellen)'));
     const scoutTick = async () => {
-      try { const n = await scout.round(); if (n) { console.log('oefen:', n, 'nieuwe oefen-trade(s)'); const m = scout.milestone(); if (m) await notify(m); saveState(); } }
+      try {
+        const n = await scout.round(), v = scout.vpNewLast();
+        if (n) { console.log('oefen:', n, 'nieuwe oefen-trade(s)'); const m = scout.milestone(); if (m) await notify(m); }
+        if (v) { console.log('oefen volume-profiel + lab:', v, 'nieuwe trade(s)'); const a = scout.vpAlerts(); if (a) await notify(a); }
+        if (labTrack.dueReport()) await labReport();
+        if (n || v) saveState();
+      }
       catch (e){ console.error('oefen fout', e.message); }
       // just after a candle closed, like the real bot
       const tf = tfSeconds() * 1000, since = Date.now() % tf;
@@ -1556,6 +1765,7 @@ async function start(){
     })();
   }
   setInterval(() => { dailyReport().catch(() => {}); }, 60000);
+  setInterval(() => { heartbeatTick().catch(e => console.error('hartslag', e.message)); watchdogCheck(); }, 60000);
   console.log('Wallets volgen:', copy.state.wallets.length ? copy.state.wallets.length + ' wallet(s) · stand ' + copy.cfg.mode + ' · elke ' + copy.cfg.pollMs / 1000 + ' s' : 'nog geen (stuur /volg <adres> in Telegram of zet COPY_WALLETS)');
   (async function copyLoop(){
     for (;;){
@@ -1583,7 +1793,20 @@ async function start(){
   }
 }
 
-if (require.main === module) start();
-module.exports = { runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
+// Railway stops the old container with SIGTERM on every redeploy or variable change. Without this the process dies on the signal,
+// Railway mails "Deployment crashed" and the last minutes of practice/risk state are lost. Now: save, then exit cleanly (code 0).
+let stopping = false;
+function shutdown(sig){
+  if (stopping) return; stopping = true;
+  console.log(sig + ': geheugen opslaan en netjes stoppen (normaal bij een nieuwe versie of gewijzigde variabelen)');
+  try { saveState(); } catch (e){ console.error('opslaan bij stoppen mislukt', e.message); }
+  process.exit(0);
+}
+if (require.main === module){
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  start();
+}
+module.exports = { tgParts, anchorBars, nightReportText, heartbeatText, logSkip, skipLog, watchdogLimit, _journal: () => journal, runEngine, getParams, tickOne, tick, stopWatchTick, nextTickDelay, syncOne, coins, start, tuneOne, tradesFromEvents, paramsFor, handleCommand, pollTelegram, statusText, dailyReport,
   pickCoins, activeTokens, manualTokens, saveState, loadState, reportText, stakeMultNow: () => stakeMult(),
   copy, cloud, scout, buyMeta, chooseTuned, gtThrottle, gtCalls, SCOUT_PER_ROUND, cleanBars, tuneGrid, growth, statusData, preBuyChecks, rugCheck, refreshMarket, get market(){ return market; }, onHuntSignal, huntText, get huntLog(){ return huntLog; }, get huntOpen(){ return huntOpen; }, ksScan, ksResolve, ksStats, ksFilterActive, ksText, get ks(){ return ks; }, set ks(v){ ks = v; }, get manualStop(){ return manualStop; }, get autoTokens(){ return autoTokens; }, get journal(){ return journal; } };

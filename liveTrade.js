@@ -9,15 +9,24 @@
  * Optional variables (defaults in brackets):
  * TRADE_AMOUNT_SOL (0.01)      SOL per buy
  * SLIPPAGE_BPS (300)           max slippage, 300 = 3%
- * MIN_SOL_RESERVE (0.01)       always keep this much SOL for fees
+ * MIN_SOL_RESERVE (0.03)       always keep this much SOL for fees
+ * MAX_OPEN_POSITIONS (2)       max positions at the same time (1 at night with NIGHT_RULES)
+ * LOSS_STREAK (3) / LOSS_PAUSE_MIN (120)  after this many losses in a row: no new buys for this long
+ * COIN_COOLDOWN_MIN (60)       after a loss on a coin: no new buy on that coin for this long
+ * NIGHT_RULES (1)              00:00–08:00 Dutch time: max 1 position, only pools with ≥ NIGHT_MIN_LIQ_USD (100000)
  * MAX_BUYS_PER_DAY (6)         stop buying after this many buys per UTC day
  * MAX_DAILY_LOSS_SOL (0.05)    stop buying for the rest of the UTC day after this loss
+ * DAILY_GOAL_EUR (20)          daily goal: once today's realized profit (Dutch day) reaches this, no NEW buys until tomorrow (0 = off).
+ *                              Open positions keep their own stops/targets. The goal NEVER raises the stake or the risk.
  * MIN_LIQUIDITY_USD (20000)    don't buy in pools with less liquidity
  * MAX_ROUND_TRIP_PCT (8)       don't buy if buying + selling right away would cost more than this (honeypot check)
+ * BLOCKLIST ()                 comma list of token addresses that are never bought (the bot adds rugs it saw itself)
  * SAFETY_CHECK (1)             check mint/freeze authority + round trip before every buy
  * PRIORITY_FEE_MAX_LAMPORTS (200000)  max priority fee per swap, helps transactions land
+ * PRIORITY_LEVEL (high)       Jupiter priority level: medium · high · veryHigh (lower = cheaper but lands less often; see the landing figures in /audit)
  * MAX_SLIPPAGE_BPS (1000)      highest slippage a BUY retry may use · MAX_SELL_SLIPPAGE_BPS (1500) same for sells
  * RPC_URL                      your own RPC (Helius/QuickNode) is much more reliable than the public one
+ * RPC_FALLBACK_URL (public)    backup RPC, used for one retry when your own RPC has a network error or rate limit
  * JUP_API_KEY                  optional Jupiter API key (then api.jup.ag is used first, with the key)
  * DRY_RUN (0)                  1 = do everything (quote, checks, build the swap) but only SIMULATE it — nothing is sent
  * CLOSE_EMPTY_ACCOUNTS (1)     after selling everything, close the empty token account → the ±0.002 SOL rent comes back
@@ -48,9 +57,31 @@ function loadKeypair(){
     : web3.Keypair.fromSecretKey(bs58.decode(raw));
   return keypairCache;
 }
-let connCache = null;
+let connCache = null, rpcWarnAt = 0;
+const RPC_NET_ERR = /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|socket|timed? ?out|429|Too Many|50[234]|Bad Gateway|Service Unavailable/i;
+// your own RPC first; on a network error / rate limit the same call goes once to the backup RPC (RPC_FALLBACK_URL, default the public one)
 function connection(){
-  if (!connCache) connCache = new web3.Connection((process.env.RPC_URL || 'https://api.mainnet-beta.solana.com').trim(), 'confirmed');
+  if (connCache) return connCache;
+  const mainUrl = (process.env.RPC_URL || 'https://api.mainnet-beta.solana.com').trim();
+  const backUrl = (process.env.RPC_FALLBACK_URL || 'https://api.mainnet-beta.solana.com').trim();
+  const main = new web3.Connection(mainUrl, 'confirmed');
+  if (!backUrl || backUrl === mainUrl){ connCache = main; return connCache; }
+  let back = null;
+  connCache = new Proxy(main, { get(target, prop){
+    const v = target[prop];
+    if (typeof v !== 'function') return v;
+    return function(...args){
+      let r;
+      try { r = v.apply(target, args); } catch (e){ throw e; }
+      if (!r || typeof r.then !== 'function') return r;
+      return r.catch(e => {
+        if (!RPC_NET_ERR.test(String(e && e.message))) throw e;
+        if (!back) back = new web3.Connection(backUrl, 'confirmed');
+        if (Date.now() - rpcWarnAt > 3600000){ rpcWarnAt = Date.now(); console.log('RPC: eigen RPC gaf een netwerkfout (' + String(e.message).slice(0, 80) + ') → reserve-RPC gebruikt'); }
+        return back[prop].apply(back, args);
+      });
+    };
+  } });
   return connCache;
 }
 
@@ -90,11 +121,36 @@ async function quote(inputMint, outputMint, amountRaw, slipBps){
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const RETRY_WAIT_MS = () => env('RETRY_WAIT_MS', 1500);
 
+function priorityLevel(){ const v = String(process.env.PRIORITY_LEVEL || 'high').trim(); return ['medium', 'high', 'veryHigh'].includes(v) ? v : 'high'; }
+
+// §4.5 execution figures: how often a transaction lands, how long it takes, what the fixed costs are (live only, never paper)
+const newExec = () => ({ sends: 0, landed: 0, failed: 0, trades: 0, firstTry: 0, late: 0, gaveUp: 0, msSum: 0, msN: 0, prioLam: 0, prioN: 0 });
+const exec = { buy: newExec(), sell: newExec(), closed: 0, stakeSol: 0, fixedSol: 0, slipSum: 0, slipN: 0, since: Date.now() };
+function execSend(kind, ok, ms, prio){
+  const e = exec[kind]; if (!e) return;
+  e.sends++; if (ok){ e.landed++; if (ms > 0){ e.msSum += ms; e.msN++; } } else e.failed++;
+  if (Number.isFinite(Number(prio)) && Number(prio) >= 0){ e.prioLam += Number(prio); e.prioN++; }
+}
+function execTrade(kind, sig, firstTry){
+  const e = exec[kind]; if (!e) return;
+  e.trades++; if (!sig) e.gaveUp++; else if (String(sig).startsWith('(')) e.late++; else if (firstTry) e.firstTry++;
+}
+function execState(){ return JSON.parse(JSON.stringify(exec)); }
+function execText(){
+  const pc = (a, b) => b ? Math.round(a / b * 100) + '%' : '–';
+  const side = (name, e) => e.trades ? name + ' ' + e.trades + '× · ' + e.firstTry + ' in 1e poging (' + pc(e.firstTry, e.trades) + ')' + (e.late ? ' · ' + e.late + ' kwam laat toch aan' : '') + (e.gaveUp ? ' · ' + e.gaveUp + ' opgegeven' : '')
+    + ' · transacties ' + e.landed + '/' + e.sends + ' geland (' + pc(e.landed, e.sends) + ')' + (e.msN ? ' · bevestiging gem. ' + (e.msSum / e.msN / 1000).toFixed(1) + ' s' : '') + (e.prioN ? ' · priority gem. ' + (e.prioLam / e.prioN / 1e9).toFixed(6) + ' SOL' : '') : name + ': nog geen';
+  if (!exec.buy.trades && !exec.sell.trades) return '⚙️ Uitvoering (§4.5): nog geen echte transacties gemeten. Priority-niveau: ' + priorityLevel() + ', max ' + env('PRIORITY_FEE_MAX_LAMPORTS', 200000) / 1e9 + ' SOL.';
+  return '⚙️ Uitvoering (§4.5, alleen echte trades) · priority-niveau ' + priorityLevel() + '\n' + side('kopen', exec.buy) + '\n' + side('verkopen', exec.sell)
+    + (exec.closed ? '\nvaste kosten (netwerk + priority + niet-teruggekregen rent) ' + (exec.fixedSol / exec.closed).toFixed(5) + ' SOL per trade = ' + (exec.fixedSol / Math.max(1e-9, exec.stakeSol) * 100).toFixed(2) + '% van de inzet (' + exec.closed + ' trades)' : '')
+    + (exec.slipN ? ' · slippage t.o.v. quote gem. ' + (exec.slipSum / exec.slipN).toFixed(2) + '%' : '');
+}
+
 // Build, sign, send AND wait for confirmation. Throws if the swap did not land or failed on-chain.
 async function buildSwap(quoteResponse, owner){
   const body = {
     quoteResponse, userPublicKey: owner.publicKey.toBase58(), wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true,
-    prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: env('PRIORITY_FEE_MAX_LAMPORTS', 200000), priorityLevel: 'high' } }
+    prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: env('PRIORITY_FEE_MAX_LAMPORTS', 200000), priorityLevel: priorityLevel() } }
   };
   let sw;
   try { sw = await jup('/swap', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
@@ -114,16 +170,33 @@ async function simulateSwap(quoteResponse, owner){
   const v = (sim && sim.value) || {};
   return { ok: !v.err, err: v.err ? JSON.stringify(v.err) : '', units: v.unitsConsumed || null, logs: (v.logs || []).slice(-3) };
 }
-async function swap(quoteResponse, owner){
+async function swap(quoteResponse, owner, kind){
   const { tx, sw } = await buildSwap(quoteResponse, owner);
   tx.sign([owner]);
-  const conn = connection();
-  const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
-  const blockhash = tx.message.recentBlockhash;
-  const lastValidBlockHeight = sw.lastValidBlockHeight || (await conn.getLatestBlockhash('confirmed')).lastValidBlockHeight;
-  const conf = await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-  if (conf && conf.value && conf.value.err) throw new Error('transactie mislukt on-chain: ' + JSON.stringify(conf.value.err) + ' (' + sig + ')');
-  return sig;
+  const conn = connection(), t0 = Date.now(), prio = sw && sw.prioritizationFeeLamports;
+  try {
+    const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+    const blockhash = tx.message.recentBlockhash;
+    const lastValidBlockHeight = sw.lastValidBlockHeight || (await conn.getLatestBlockhash('confirmed')).lastValidBlockHeight;
+    const conf = await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    if (conf && conf.value && conf.value.err) throw new Error('transactie mislukt on-chain: ' + JSON.stringify(conf.value.err) + ' (' + sig + ')');
+    execSend(kind, true, Date.now() - t0, prio);
+    return sig;
+  } catch (e){ execSend(kind, false, 0, prio); throw e; }
+}
+
+/**
+ * What buying + immediately selling `sol` worth of a token costs on Jupiter right now, in % of the stake
+ * (route + pool fees + price impact; NOT the network/priority fees). Read-only: two quotes, nothing is signed or sent, no key needed.
+ * Used by the paper lab so every practice coin pays its own real cost instead of one guess for all coins.
+ */
+async function roundTripPct(mint, sol){
+  const lamports = Math.max(1000, Math.floor((Number(sol) > 0 ? Number(sol) : env('TRADE_AMOUNT_SOL', 0.01)) * 1e9));
+  const buy = await quote(SOL_MINT, mint, lamports);
+  if (!buy || !(Number(buy.outAmount) > 0)) throw new Error('geen koop-quote');
+  const back = await quote(mint, SOL_MINT, buy.outAmount);
+  if (!back || !(Number(back.outAmount) >= 0)) throw new Error('geen verkoop-quote');
+  return (1 - Number(back.outAmount) / lamports) * 100;
 }
 
 async function tokenAccounts(owner, mintStr){
@@ -182,8 +255,32 @@ async function reclaimRent(){
 async function solBalance(owner){ return (await connection().getBalance(owner.publicKey)) / 1e9; }
 
 // ---------- safety (same checks as the web app) ----------
+// hard blocks (§3.2): coins on the blocklist (yours via BLOCKLIST, plus every coin whose pool liquidity collapsed while we held it)
+const blocked = new Map();   // mint -> reason
+function blockMint(mint, why){ if (mint) blocked.set(String(mint), String(why || 'geblokkeerd').slice(0, 120)); }
+function blockReason(mint){
+  const env2 = String(process.env.BLOCKLIST || '').split(',').map(x => x.trim()).filter(Boolean);
+  return env2.includes(mint) ? 'op je BLOCKLIST' : blocked.get(mint) || null;
+}
+/** Token-2022 traps: a transfer fee above 10 %, a permanent delegate (can take your tokens), non-transferable, or a transfer hook */
+function token2022Problems(parsedInfo){
+  const out = [];
+  for (const x of (parsedInfo && parsedInfo.extensions) || []){
+    const k = x.extension, st = x.state || {};
+    if (k === 'transferFeeConfig'){
+      const bps = Math.max(Number(st.newerTransferFee && st.newerTransferFee.transferFeeBasisPoints) || 0, Number(st.olderTransferFee && st.olderTransferFee.transferFeeBasisPoints) || 0);
+      if (bps > 1000) out.push('verborgen transfer-fee ' + (bps / 100) + '% (> 10%)');
+    }
+    if (k === 'permanentDelegate' && st.delegate) out.push('maker kan tokens uit je wallet halen (permanent delegate)');
+    if (k === 'nonTransferable') out.push('token is niet over te dragen');
+    if (k === 'transferHook' && st.programId) out.push('transfer-hook (verkopen kan geblokkeerd worden)');
+  }
+  return out;
+}
 async function safetyProblems(tokenMint, buyQuote, lamports, info){
   const problems = [];
+  const br = blockReason(tokenMint);
+  if (br) problems.push('blocklist: ' + br);
   const minLiq = env('MIN_LIQUIDITY_USD', 20000);
   if (info && Number.isFinite(info.liquidityUsd) && info.liquidityUsd < minLiq) problems.push('liquiditeit $' + Math.round(info.liquidityUsd) + ' < $' + minLiq);
   if (process.env.SAFETY_CHECK === '0') return problems;
@@ -194,6 +291,7 @@ async function safetyProblems(tokenMint, buyQuote, lamports, info){
     else {
       if (parsed.info.mintAuthority) problems.push('maker kan nog tokens bijmaken (mint authority)');
       if (parsed.info.freezeAuthority) problems.push('maker kan wallets bevriezen (freeze authority)');
+      token2022Problems(parsed.info).forEach(x => problems.push(x));
     }
   } catch (e){ problems.push('mint-check mislukt (' + e.message + ')'); }
   try {
@@ -219,8 +317,54 @@ function withWalletLock(fn){
 // Assumption: the bot wallet is ONLY used by the bot. Tokens of a watched coin in it = the bot's position.
 const state = new Map();     // mint -> { open, tp1Done, spentSol, busy }
 const day = { key: '', buys: 0, pnlSol: 0 };
-function today(){ return new Date().toISOString().slice(0, 10); }
-function dayStats(){ const k = today(); if (day.key !== k){ day.key = k; day.buys = 0; day.pnlSol = 0; } return day; }
+// the trading day follows Dutch time (00:00 Amsterdam), not UTC
+function today(){ return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Amsterdam' }).format(new Date()); }
+function nlHour(){ return Number(new Intl.DateTimeFormat('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', hour12: false }).format(new Date())) % 24; }
+// risk rules (deel 5): losses in a row → pause, a coin that just lost → wait, never too many positions at once
+const risk = { streak: 0, pauseUntil: 0, coinLossAt: {} };
+function openCount(){ let n = 0; state.forEach(v => { if (v.open) n++; }); return n; }
+/** why a new (non-test) buy is not allowed right now, or null */
+function riskBlock(mint, info, hourNL){
+  const now = Date.now();
+  const maxOpen = Math.max(1, Math.floor(env('MAX_OPEN_POSITIONS', 2)));
+  const night = flagOn('NIGHT_RULES', true) && (hourNL != null ? hourNL : nlHour()) < 8;
+  const open = openCount();
+  if (open >= (night ? 1 : maxOpen)) return 'al ' + open + ' positie(s) open (max ' + (night ? '1 \'s nachts' : maxOpen) + ')';
+  if (night && !(Number(info && info.liquidityUsd) >= env('NIGHT_MIN_LIQ_USD', 100000))) return 'nacht (00–08 u): liquiditeit onder $' + Math.round(env('NIGHT_MIN_LIQ_USD', 100000) / 1000) + 'K';
+  if (risk.pauseUntil > now) return 'pauze na ' + env('LOSS_STREAK', 3) + ' verliezen op rij, tot ' + new Date(risk.pauseUntil).toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit' });
+  const cool = env('COIN_COOLDOWN_MIN', 60) * 60000, at = risk.coinLossAt[mint] || 0;
+  if (cool > 0 && now - at < cool) return 'deze coin verloor net, wacht nog ' + Math.ceil((cool - (now - at)) / 60000) + ' min';
+  return null;
+}
+function riskAfterClose(mint, pnl){
+  if (pnl < 0){
+    risk.coinLossAt[mint] = Date.now();
+    risk.streak++;
+    if (risk.streak >= Math.max(1, env('LOSS_STREAK', 3))){
+      risk.streak = 0; risk.pauseUntil = Date.now() + env('LOSS_PAUSE_MIN', 120) * 60000;
+      say('⏸️ ' + env('LOSS_STREAK', 3) + ' verliezen op rij: ' + env('LOSS_PAUSE_MIN', 120) + ' min geen nieuwe buys (open posities lopen gewoon door).');
+    }
+  } else risk.streak = 0;
+  Object.keys(risk.coinLossAt).forEach(k => { if (Date.now() - risk.coinLossAt[k] > 86400000) delete risk.coinLossAt[k]; });
+}
+function dayStats(){ const k = today(); if (day.key !== k){ day.key = k; day.buys = 0; day.pnlSol = 0; day.goalSaid = ''; } return day; }
+// ---------- daily goal (12-10c): lock in a good day, never chase it ----------
+let solEurFn = () => null;
+function setSolEur(fn){ solEurFn = typeof fn === 'function' ? fn : () => null; }
+function goalState(){
+  const d = dayStats(), goal = Math.max(0, env('DAILY_GOAL_EUR', 20)), px = Number(solEurFn()) || 0;
+  const eur = px > 0 ? d.pnlSol * px : null;
+  return { goal, eur, pnlSol: d.pnlSol, solEur: px || null, reached: goal > 0 && eur != null && eur >= goal, pct: goal > 0 && eur != null ? Math.max(0, Math.round(eur / goal * 100)) : 0 };
+}
+/** say it once per day when the goal was reached (after a sell, or when a buy is skipped because of it) */
+async function goalCheck(){
+  const g = goalState(), d = dayStats();
+  if (g.reached && d.goalSaid !== d.key){
+    d.goalSaid = d.key;
+    await say('🎯 Dagdoel gehaald: vandaag ≈ +€' + g.eur.toFixed(2) + ' (doel €' + g.goal + '). Geen nieuwe buys meer tot morgen 00:00; open posities lopen gewoon af.');
+  }
+  return g;
+}
 
 async function getState(mint){
   let s = state.get(mint);
@@ -237,6 +381,7 @@ async function getState(mint){
   }
   return s;
 }
+function openedAt(mint){ const s = state.get(mint); return s && s.open ? (s.openedAt || 1) : 0; }
 function isOpen(mint){ const s = state.get(mint); return !!(s && s.open); }
 function tp1Taken(mint){ const s = state.get(mint); return !!(s && s.tp1Done); }
 async function positionOpen(mint){ return (await getState(mint)).open; }
@@ -247,13 +392,19 @@ function setJournal(fn){ journalFn = fn; }
 // save / restore what the bot knows (positions are always re-checked against the wallet after a restart)
 function exportState(){
   const pos = {};
-  state.forEach((v, k) => { pos[k] = { open: v.open, tp1Done: v.tp1Done, spentSol: v.spentSol, receivedSol: v.receivedSol || 0 }; });
-  return { pos, day: { key: day.key, buys: day.buys, pnlSol: day.pnlSol } };
+  state.forEach((v, k) => { pos[k] = { open: v.open, tp1Done: v.tp1Done, spentSol: v.spentSol, receivedSol: v.receivedSol || 0, sigs: v.sigs || [], stakeSol: v.stakeSol || 0, openedAt: v.openedAt || 0 }; });
+  return { pos, blocked: Object.fromEntries(blocked), day: { key: day.key, buys: day.buys, pnlSol: day.pnlSol, goalSaid: day.goalSaid || '' }, risk: { streak: risk.streak, pauseUntil: risk.pauseUntil, coinLossAt: risk.coinLossAt }, exec: execState() };
 }
 function importState(o){
   if (!o) return;
-  Object.entries(o.pos || {}).forEach(([k, v]) => state.set(k, { open: !!v.open, tp1Done: !!v.tp1Done, spentSol: Number(v.spentSol) || 0, receivedSol: Number(v.receivedSol) || 0, busy: false, initDone: false }));
-  if (o.day && o.day.key === today()){ day.key = o.day.key; day.buys = Number(o.day.buys) || 0; day.pnlSol = Number(o.day.pnlSol) || 0; }
+  Object.entries(o.pos || {}).forEach(([k, v]) => state.set(k, { open: !!v.open, tp1Done: !!v.tp1Done, spentSol: Number(v.spentSol) || 0, receivedSol: Number(v.receivedSol) || 0, sigs: Array.isArray(v.sigs) ? v.sigs.map(String) : [], stakeSol: Number(v.stakeSol) || 0, openedAt: Number(v.openedAt) || 0, busy: false, initDone: false }));
+  if (o.risk){ risk.streak = Number(o.risk.streak) || 0; risk.pauseUntil = Number(o.risk.pauseUntil) || 0; if (o.risk.coinLossAt && typeof o.risk.coinLossAt === 'object') Object.entries(o.risk.coinLossAt).forEach(([k, v]) => { if (Number(v) > 0) risk.coinLossAt[k] = Number(v); }); }
+  if (o.blocked && typeof o.blocked === 'object') Object.entries(o.blocked).forEach(([k, v]) => blockMint(k, v));
+  if (o.exec && typeof o.exec === 'object'){
+    ['buy', 'sell'].forEach(k => { const src = o.exec[k] || {}; Object.keys(exec[k]).forEach(f => { if (Number.isFinite(Number(src[f]))) exec[k][f] = Number(src[f]); }); });
+    ['closed', 'stakeSol', 'fixedSol', 'slipSum', 'slipN', 'since'].forEach(f => { if (Number.isFinite(Number(o.exec[f]))) exec[f] = Number(o.exec[f]); });
+  }
+  if (o.day && o.day.key === today()){ day.key = o.day.key; day.buys = Number(o.day.buys) || 0; day.pnlSol = Number(o.day.pnlSol) || 0; day.goalSaid = String(o.day.goalSaid || ''); }
 }
 function setNotify(fn){ notifyFn = fn; }
 async function say(msg){ try { await notifyFn(msg); } catch (_){ console.log(msg); } }
@@ -266,13 +417,15 @@ async function doBuy(mint, s, info, forceDry){
   if (s.open) return say('LIVE BUY overgeslagen: positie op ' + mint.slice(0, 6) + ' staat al open');
   if (d.buys >= maxBuys) return say('LIVE BUY overgeslagen: al ' + d.buys + ' buys vandaag (max ' + maxBuys + ')');
   if (-d.pnlSol >= maxLoss) return say('LIVE BUY overgeslagen: dagverlies ' + (-d.pnlSol).toFixed(4) + ' SOL ≥ max ' + maxLoss + ' — morgen weer');
+  if (!forceDry && !(info && info.testSol > 0) && (await goalCheck()).reached){ console.log('LIVE BUY overgeslagen (' + mint.slice(0, 6) + '): dagdoel gehaald'); return { skipped: 'dagdoel gehaald' }; }
+  if (!forceDry && !(info && info.testSol > 0)){ const why = riskBlock(mint, info); if (why){ console.log('LIVE BUY overgeslagen (' + mint.slice(0, 6) + '):', why); return { skipped: why }; } }
   const owner = loadKeypair();
   const mult = Math.min(1, Math.max(0.25, Number(info && info.stakeMult) || 1));   // never more than the normal amount
   // /testtrade: a fixed tiny amount (capped in testRoundTrip), never more than TEST_TRADE_MAX_SOL — and never the normal stake
   if (info && 'testSol' in info && !(info.testSol > 0)) return say('🧪 TEST geweigerd: geen geldig testbedrag.');
   const isTest = !!(info && info.testSol > 0);
   const buySol = isTest ? Math.round(info.testSol * 1e6) / 1e6 : Math.round(env('TRADE_AMOUNT_SOL', 0.01) * mult * 1e6) / 1e6;
-  const reserve = env('MIN_SOL_RESERVE', 0.01);
+  const reserve = env('MIN_SOL_RESERVE', 0.03);
   const bal = await solBalance(owner);
   const lowBal = bal < buySol + reserve;
   // dry run with too little SOL: still test quote, checks and the swap itself — the simulation then reports the shortage
@@ -292,7 +445,7 @@ async function doBuy(mint, s, info, forceDry){
   const rawBefore = await tokenRawBalance(owner, mint);
   // try, and if it fails (slippage, network busy, expired) try once more with a fresh quote and a bit more slippage —
   // but first check the wallet: if the first attempt landed after all, never buy a second time
-  let sig = null, lastErr = null, slip = env('SLIPPAGE_BPS', 300), retried = false;
+  let sig = null, lastErr = null, slip = env('SLIPPAGE_BPS', 300), retried = false, firstTry = false;
   for (let attempt = 0; attempt < 2 && !sig; attempt++){
     if (attempt > 0){
       if ((await tokenRawBalance(owner, mint)) > 0n){ sig = '(eerste poging kwam toch aan)'; break; }
@@ -300,10 +453,11 @@ async function doBuy(mint, s, info, forceDry){
       retried = true;
       await sleep(RETRY_WAIT_MS());
     }
-    try { sig = await swap(attempt === 0 ? q : await quote(SOL_MINT, mint, lamports, slip), owner); }
+    try { sig = await swap(attempt === 0 ? q : await quote(SOL_MINT, mint, lamports, slip), owner, 'buy'); if (sig && attempt === 0) firstTry = true; }
     catch (e){ lastErr = e; console.log('LIVE BUY poging ' + (attempt + 1) + ' mislukt (' + mint.slice(0, 6) + '): ' + e.message); }
   }
   if (!sig && (await tokenRawBalance(owner, mint)) > 0n) sig = '(poging kwam toch aan)';
+  if (!isTest) execTrade('buy', sig, firstTry);
   if (!sig) throw new Error('koop mislukt na 2 pogingen: ' + (lastErr ? lastErr.message : 'onbekend'));
   const raw = await tokenRawBalance(owner, mint);
   if (raw <= 0n) throw new Error('buy bevestigd maar geen tokens ontvangen (' + sig + ')');
@@ -313,7 +467,8 @@ async function doBuy(mint, s, info, forceDry){
   // slippage: tokens we got versus what the quote promised (+ = worse than expected)
   const got = Number(raw - rawBefore), promised = Number(q.outAmount);
   s.slipBuyPct = promised > 0 && got > 0 ? (1 - got / promised) * 100 : null;
-  s.open = true; s.tp1Done = false; s.tp2Done = false; s.spentSol = spent; s.stakeSol = buySol; if (!isTest) d.buys++;   // a test is not a trading buy
+  s.open = true; s.openedAt = Date.now(); s.tp1Done = false; s.tp2Done = false; s.spentSol = spent; s.stakeSol = buySol; if (!isTest) d.buys++;   // a test is not a trading buy
+  s.sigs = [sig];   // every transaction of this trade, so the auditor can check it on chain
   await say('✅ LIVE BUY ' + buySol + ' SOL (echt van wallet af: ' + spent.toFixed(5) + ')' + (mult < 1 ? ' (verkleind na verliesreeks)' : '') + (retried ? ' (2e poging, slippage ' + (slip / 100) + '%)' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ' + (sig.startsWith('(') ? sig : 'https://solscan.io/tx/' + sig));
 }
 
@@ -334,10 +489,11 @@ async function doSell(mint, s, label, frac, info){
       await sleep(RETRY_WAIT_MS());
     }
     tries = attempt + 1;
-    try { q = await quote(mint, SOL_MINT, amount.toString(), slip); sig = await swap(q, owner); }
+    try { q = await quote(mint, SOL_MINT, amount.toString(), slip); sig = await swap(q, owner, label === 'TEST' ? 'test' : 'sell'); }
     catch (e){ lastErr = e; console.log('LIVE ' + label + ' poging ' + (attempt + 1) + ' mislukt (' + mint.slice(0, 6) + '): ' + e.message); }
   }
   if (!sig && (await tokenRawBalance(owner, mint)) <= target + raw / 1000n) sig = '(poging kwam toch aan)';
+  if (label !== 'TEST') execTrade('sell', sig, tries === 1);
   if (!sig) throw new Error('verkoop mislukt na 3 pogingen: ' + (lastErr ? lastErr.message : 'onbekend') + ' — de bot probeert het later opnieuw');
   // what really came in (wallet difference); falls back to the quote if the balance can't be read
   let gotSol = q ? Number(q.outAmount) / 1e9 : 0;
@@ -354,13 +510,21 @@ async function doSell(mint, s, label, frac, info){
       } catch (e){ console.log('LIVE: leeg token-account sluiten mislukt (' + mint.slice(0, 6) + '): ' + e.message + ' — /opruimen probeert het later'); }
     }
     const pnl = gotSol + rentBack + (s.receivedSol || 0) - s.spentSol;
-    if (label !== 'TEST' && label !== 'HANDMATIG') dayStats().pnlSol += pnl;   // tests / manual sells don't count toward the daily loss limit
+    // fixed costs of this trade: what left the wallet on the buy beyond the stake (network + priority + token-account rent) minus the rent that came back
+    const fixedSol = Math.max(0, (s.spentSol || 0) - (s.stakeSol || s.spentSol || 0) - rentBack);
+    if (label !== 'TEST' && label !== 'HANDMATIG' && s.stakeSol > 0){
+      exec.closed++; exec.stakeSol += s.stakeSol; exec.fixedSol += fixedSol;
+      [s.slipBuyPct, slipSell].forEach(x => { if (Number.isFinite(x)){ exec.slipSum += x; exec.slipN++; } });
+    }
+    if (label !== 'TEST' && label !== 'HANDMATIG'){ dayStats().pnlSol += pnl; riskAfterClose(mint, pnl); }   // tests / manual sells don't count toward the daily loss limit
     try { journalFn({ test: label === 'TEST' || label === 'HANDMATIG', mint, symbol: (info && info.symbol) || mint.slice(0, 6), spentSol: s.spentSol, gotSol: gotSol + rentBack + (s.receivedSol || 0), pnlSol: pnl, exit: label, time: Date.now(), sig,
-      stakeSol: s.stakeSol || s.spentSol, rentBack, slipBuyPct: s.slipBuyPct != null ? +s.slipBuyPct.toFixed(2) : null, slipSellPct: slipSell != null ? +slipSell.toFixed(2) : null }); } catch (_){}
-    s.open = false; s.tp1Done = false; s.tp2Done = false; s.receivedSol = 0;
+      sigs: (s.sigs || []).concat([sig]), wallet: owner.publicKey.toBase58(), openedAt: s.openedAt || null,
+      stakeSol: s.stakeSol || s.spentSol, rentBack, fixedSol: +fixedSol.toFixed(6), slipBuyPct: s.slipBuyPct != null ? +s.slipBuyPct.toFixed(2) : null, slipSellPct: slipSell != null ? +slipSell.toFixed(2) : null }); } catch (_){}
+    s.open = false; s.tp1Done = false; s.tp2Done = false; s.receivedSol = 0; s.sigs = [];
     await say('💰 LIVE ' + label + ' alles verkocht' + (tries > 1 ? ' (poging ' + tries + ')' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ≈ ' + (pnl >= 0 ? '+' : '') + pnl.toFixed(4) + ' SOL · ' + (sig.startsWith('(') ? sig : 'https://solscan.io/tx/' + sig));
+    if (label !== 'TEST' && label !== 'HANDMATIG') await goalCheck();
   } else {
-    s.receivedSol = (s.receivedSol || 0) + gotSol;
+    s.receivedSol = (s.receivedSol || 0) + gotSol; (s.sigs = s.sigs || []).push(sig);
     await say('💰 LIVE ' + label + ' ' + Math.round(frac * 100) + '% verkocht' + (tries > 1 ? ' (poging ' + tries + ')' : '') + ' · ' + (info && info.symbol || mint.slice(0, 6)) + ' · ' + (sig.startsWith('(') ? sig : 'https://solscan.io/tx/' + sig));
   }
 }
@@ -476,7 +640,8 @@ async function startupReport(){
   const bal = await solBalance(owner);
   return 'Live trades AAN · wallet ' + owner.publicKey.toBase58().slice(0, 4) + '…' + owner.publicKey.toBase58().slice(-4)
     + ' · ' + bal.toFixed(4) + ' SOL · inzet ' + env('TRADE_AMOUNT_SOL', 0.01) + ' SOL · max ' + env('MAX_BUYS_PER_DAY', 6)
-    + ' buys/dag · max dagverlies ' + env('MAX_DAILY_LOSS_SOL', 0.05) + ' SOL';
+    + ' buys/dag · max dagverlies ' + env('MAX_DAILY_LOSS_SOL', 0.05) + ' SOL' + (env('DAILY_GOAL_EUR', 20) > 0 ? ' · dagdoel €' + env('DAILY_GOAL_EUR', 20) + ' (daarna geen nieuwe buys)' : '');
 }
 
-module.exports = { liveEnabled, dryRun, dryRunBuy, dryRunSell, testRoundTrip, sellNow, reclaimRent, withWalletLock, handleLiveEvents, loadKeypair, isOpen, tp1Taken, positionOpen, setNotify, setJournal, exportState, importState, startupReport, _state: state, _day: day };
+async function walletSol(){ return solBalance(loadKeypair()); }
+module.exports = { roundTripPct, execText, execState, priorityLevel, _execSend: execSend, _execTrade: execTrade, blockMint, blockReason, token2022Problems, goalState, goalCheck, setSolEur, openedAt, _connection: connection, walletSol, riskBlock, riskAfterClose, openCount, _risk: risk, liveEnabled, dryRun, dryRunBuy, dryRunSell, testRoundTrip, sellNow, reclaimRent, withWalletLock, handleLiveEvents, loadKeypair, isOpen, tp1Taken, positionOpen, setNotify, setJournal, exportState, importState, startupReport, _state: state, _day: day };
